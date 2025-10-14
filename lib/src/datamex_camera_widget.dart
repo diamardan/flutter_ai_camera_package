@@ -109,11 +109,7 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
       debugPrint('Error picking image: $e');
       widget.loadStatusCallback(false);
       widget.changeStatusMessageCallback('Error al abrir ${source == ImageSource.camera ? "cámara" : "galería"}');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: ${e.toString()}'), backgroundColor: Colors.red),
-        );
-      }
+      // Silent: no toast per requirements
       widget.onImageSelected.call(null);
     }
   }
@@ -197,7 +193,7 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
                             borderRadius: BorderRadius.circular(12),
                             child: Image.file(
                               imageFile,
-                              fit: BoxFit.cover,
+                              fit: BoxFit.contain,
                               width: double.infinity,
                               height: height,
                             ),

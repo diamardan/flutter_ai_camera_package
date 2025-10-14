@@ -1,3 +1,4 @@
+import 'dart:developer';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -41,10 +42,6 @@ class ExampleApp extends StatelessWidget {
 class HomePage extends ConsumerWidget {
   const HomePage({super.key});
 
-  void _showMessage(BuildContext context, String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
@@ -66,9 +63,9 @@ class HomePage extends ConsumerWidget {
               ],
               onImageSelected: (file) {
                 if (file != null) {
-                  _showMessage(context, 'Imagen seleccionada: ${file.path}');
+                 log('Imagen seleccionada: ${file.path}');
                 } else {
-                  _showMessage(context, 'No se seleccionó imagen');
+                  log('No se seleccionó imagen');
                 }
               },
               loadStatusCallback: (loading) {

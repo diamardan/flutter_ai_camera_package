@@ -124,21 +124,11 @@ class _DatamexCameraOverlayScreenState
   }
 
   void _showPermissionDenied(String type) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Permiso de $type denegado'),
-        action: SnackBarAction(
-          label: 'Configuración',
-          onPressed: () => openAppSettings(),
-        ),
-      ),
-    );
+    // Silent: no toast per requirements
   }
 
   void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.red),
-    );
+    // Silent: no toast per requirements
   }
 
   @override

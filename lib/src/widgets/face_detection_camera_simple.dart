@@ -297,7 +297,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
     }
   }
 
-  void _showError(String msg) { if (!mounted) return; ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: Colors.red)); }
+  void _showError(String msg) { /* Silent: no toast per requirements */ }
 
   @override
   Widget build(BuildContext context) {
