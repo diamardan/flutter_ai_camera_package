@@ -1,0 +1,17 @@
+name: datamex_camera_package_example
+description: Example app para datamex_camera_package
+publish_to: "none"
+version: 0.0.1
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^2.5.1
+  datamex_camera_package:
+    path: ..
+  permission_handler: ^11.3.0
+
+flutter:
+  uses-material-design: true
