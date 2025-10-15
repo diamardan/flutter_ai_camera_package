@@ -4,11 +4,12 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image/image.dart' as img;
 import 'package:flutter/foundation.dart' show compute;
-import 'dart:typed_data';
+// removed: 'dart:typed_data' (Uint8List is available via flutter services import per analyzer)
 import 'dart:math' as math;
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import '../services/face_detection_service.dart';
+import '../crop/simple_cropper.dart';
 
 /// Minimal FaceDetectionCamera implementation in a fresh file.
 class FaceDetectionCameraSimple extends StatefulWidget {
@@ -16,6 +17,14 @@ class FaceDetectionCameraSimple extends StatefulWidget {
   final Function(File?) onImageCaptured;
   final int requiredValidFrames;
   final bool showFaceGuides;
+  // Validation thresholds
+  final double yawMaxDegrees;   // left/right turn tolerance
+  final double pitchMaxDegrees; // up/down tilt tolerance
+  final double rollMaxDegrees;  // head tilt tolerance
+  final double minFaceHeight;   // min face height ratio (0..1)
+  final double maxFaceHeight;   // max face height ratio (0..1)
+  // Oval centering tolerance (validation ellipse is scaled by this factor; >1 means more permissive)
+  final double ovalValidationScale;
 
   const FaceDetectionCameraSimple({
     super.key,
@@ -23,6 +32,12 @@ class FaceDetectionCameraSimple extends StatefulWidget {
     required this.onImageCaptured,
     this.requiredValidFrames = 5,
     this.showFaceGuides = true,
+    this.yawMaxDegrees = 10.0,
+    this.pitchMaxDegrees = 10.0,
+    this.rollMaxDegrees = 8.0,
+    this.minFaceHeight = 0.34,
+    this.maxFaceHeight = 0.55,
+    this.ovalValidationScale = 1.12,
   });
 
   @override
@@ -135,39 +150,108 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         }
         return;
       }
-      // Apply mirror to center for oval detection (CameraPreview is mirrored)
-      if (widget.useFrontCamera) normCenter = Offset(1.0 - normCenter.dx, normCenter.dy);
+      // Opcional: espejo de centro para chequeo; el óvalo es simétrico, así que no afecta el resultado,
+      // pero mantenemos consistencia visual con la previsualización espejada.
+      if (widget.useFrontCamera) {
+        normCenter = Offset(1.0 - normCenter.dx, normCenter.dy);
+      }
 
-  // Ovalo más ESTRECHO manteniendo la altura original (ancho ~56%, alto ~50%).
-  // Mantener sincronía con el overlay visual.
-  const cx = 0.5, cy = 0.5, rx = 0.28, ry = 0.25;
+  // Parámetros del óvalo (sincronizados con el painter): ancho ≈56%, alto ≈50% del lienzo
+  const cx = 0.5, cy = 0.5, rxBase = 0.28, ryBase = 0.25;
+  final rx = rxBase * widget.ovalValidationScale;
+  final ry = ryBase * widget.ovalValidationScale;
+
+      // Chequeo por centro dentro del óvalo
       final dx = (normCenter.dx - cx) / rx;
       final dy = (normCenter.dy - cy) / ry;
-      final inside = (dx * dx + dy * dy) <= 1.0;
+      final centerInside = (dx * dx + dy * dy) <= 1.0;
 
-      // Use coordinates directly without mirroring for drawing (Transform handles it)
+      // Chequeos de contención:
+      // 1) rectInside: TODAS las esquinas del bounding box dentro del óvalo (estricto)
+      // 2) topBottomInside: los puntos medio-superior y medio-inferior del rostro dentro del óvalo (tolerante a desborde lateral)
+      bool rectInside = true;
+      bool topBottomInside = true;
+      Rect? faceRect = res.normalizedFaceBounds;
+      if (faceRect != null) {
+        // Espejar rect si está en cámara frontal, para coincidir con el overlay espejado
+        if (widget.useFrontCamera) {
+          faceRect = Rect.fromLTWH(1.0 - (faceRect.left + faceRect.width), faceRect.top, faceRect.width, faceRect.height);
+        }
+
+        bool ptInside(Offset p) {
+          final ddx = (p.dx - cx) / rx;
+          final ddy = (p.dy - cy) / ry;
+          return (ddx * ddx + ddy * ddy) <= 1.0;
+        }
+
+        final corners = <Offset>[
+          faceRect.topLeft,
+          faceRect.topRight,
+          faceRect.bottomLeft,
+          faceRect.bottomRight,
+        ];
+
+        // Requiere que todas las esquinas estén dentro del óvalo
+  rectInside = corners.every(ptInside);
+
+        // Puntos medio-superior e inferior sobre la vertical del centro del rostro
+        final midTop = Offset(faceRect.center.dx, faceRect.top);
+        final midBottom = Offset(faceRect.center.dx, faceRect.bottom);
+        topBottomInside = ptInside(midTop) && ptInside(midBottom);
+      }
+
+      // Estado final (más tolerante): centro dentro y (rectángulo completamente dentro
+      // o al menos top/bottom dentro para garantizar centrado vertical aceptable)
+      final inside = centerInside && (rectInside || topBottomInside);
+
+  // Use coordinates directly without mirroring for drawing (Transform handles it)
       _faceRectNorm = res.normalizedFaceBounds;
       _normLandmarks = res.normalizedLandmarks;
       _normContours = res.normalizedContours;
-      if (inside) {
+      // Orientation (front-facing) checks
+      final yaw = (res.headEulerAngleY ?? 0).abs();   // left-right
+      final pitch = (res.headEulerAngleX ?? 0).abs(); // up-down
+      final roll = (res.headEulerAngleZ ?? 0).abs();  // head tilt
+      final orientationOk = yaw <= widget.yawMaxDegrees &&
+          pitch <= widget.pitchMaxDegrees &&
+          roll <= widget.rollMaxDegrees;
+
+      // Distance (size) checks
+      final fh = (res.normalizedFaceHeight ?? 0).clamp(0.0, 1.0);
+      final distanceOk = fh >= widget.minFaceHeight && fh <= widget.maxFaceHeight;
+
+      // Lighting (informational only)
+      final lowLight = _lightingLevel < 0.25;
+
+      // All gates must pass for auto-capture
+      final allValid = res.faceDetected && inside && orientationOk && distanceOk;
+
+      // Status message priority
+      String nextMsg;
+      if (!res.faceDetected) {
+        nextMsg = '❌ No se detecta rostro';
+      } else if (!inside) {
+        nextMsg = lowLight ? '🔦 Más iluminación' : '🎯 Centra tu rostro';
+      } else if (!orientationOk) {
+        nextMsg = '👀 Mira al frente y endereza tu cabeza';
+      } else if (!distanceOk) {
+        nextMsg = fh < widget.minFaceHeight ? 'Acércate un poco' : 'Aléjate un poco';
+      } else {
+        nextMsg = lowLight ? '🔦 Asegúrate de estar bien iluminado' : '✅ Mantén la posición';
+      }
+
+      if (allValid) {
         _validFrames++;
-        // Mensaje tiene prioridad por iluminación si está baja
-        final lowLight = _lightingLevel < 0.25;
-        final nextMsg = lowLight ? '🔦 Asegúrate de estar en un lugar bien iluminado' : '✅ Mantén la posición';
         if (mounted && (!_insideOval || _statusMessage != nextMsg)) {
           setState(() {
             _insideOval = true;
             _statusMessage = nextMsg;
           });
         } else if (mounted) {
-          // refresca progreso sin tocar mensaje
           setState(() {});
         }
         if (_validFrames >= widget.requiredValidFrames) await _captureImage();
       } else {
-        final lowLight = _lightingLevel < 0.25;
-        final nextMsg = lowLight ? '🔦 Asegúrate de estar en un lugar bien iluminado' : '🎯 Centra tu rostro';
-        // Gentle decay (avoid full reset) to prevent loop
         final newValid = (_validFrames - 1).clamp(0, widget.requiredValidFrames);
         if (mounted && (_validFrames != newValid || _insideOval || _statusMessage != nextMsg)) {
           setState(() {
@@ -230,16 +314,35 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       if (!mounted) return;
       // Espejar horizontalmente la imagen para selfies (modo espejo)
       File file = File(pic.path);
+      Uint8List? mirroredBytes;
       if (widget.useFrontCamera) {
         try {
-          final bytes = await file.readAsBytes(); // Uint8List
+          final bytes = await file.readAsBytes();
           final mirrored = await compute(_mirrorBytes, bytes);
           if (mirrored.isNotEmpty) {
-            await file.writeAsBytes(mirrored, flush: true);
+            mirroredBytes = mirrored;
           }
         } catch (e) {
           debugPrint('[Capture] mirror failed, using original: $e');
         }
+      }
+
+      // Recorte simple 3:4 - usa SimpleCropper directo con bytes
+      try {
+        // Si hay bytes espejados, usarlos; si no, leer del archivo original
+        final bytesToCrop = mirroredBytes ?? await file.readAsBytes();
+        debugPrint('[Capture] Cropping ${bytesToCrop.length} bytes');
+        
+        final cropped = await SimpleCropper.cropTo34(bytesToCrop);
+        file = cropped;
+        
+        debugPrint('[Capture] Cropped file path: ${file.path}');
+        debugPrint('[Capture] Cropped file exists: ${file.existsSync()}');
+        debugPrint('[Capture] Cropped file size: ${file.existsSync() ? file.lengthSync() : 0} bytes');
+      } catch (e, stack) {
+        debugPrint('[Capture] Crop failed: $e');
+        debugPrint('[Capture] Stack: $stack');
+        // Si falla el crop, usar la imagen original sin recortar
       }
       // Oculta la textura de la cámara durante la navegación para evitar errores de Impeller
   setState(() { _hideCameraPreview = true; });

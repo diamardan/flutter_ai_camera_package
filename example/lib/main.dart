@@ -55,6 +55,7 @@ class HomePage extends ConsumerWidget {
               showGuidelinesWindow: true,
               showAcceptGuidelinesCheckbox: true,
               showFaceGuides: false,
+              
               guidelinesObject: [
                 GuidelineEntry('Asegúrate de tener buena iluminación.'),
                 GuidelineEntry('Mantén la cámara estable.'),
