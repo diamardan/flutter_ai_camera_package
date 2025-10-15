@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart' show compute;
 // removed: 'dart:typed_data' (Uint8List is available via flutter services import per analyzer)
 import 'dart:math' as math;
 import 'package:camera/camera.dart';
+import '../core/platform_handler.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import '../services/face_detection_service.dart';
 import '../services/lighting_validator.dart';
@@ -95,7 +96,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         camera,
         ResolutionPreset.medium,
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.yuv420,
+        imageFormatGroup: PlatformHandler.isIOS ? ImageFormatGroup.bgra8888 : ImageFormatGroup.yuv420,
       );
       await _controller!.initialize();
   // Bloquear a portrait para evitar cambios de orientación durante la captura

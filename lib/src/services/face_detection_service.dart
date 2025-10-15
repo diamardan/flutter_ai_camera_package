@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../core/platform_handler.dart';
+import '../ios_config/ios_image_processor.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:camera/camera.dart';
 import '../models/face_detection_result.dart';
@@ -30,7 +32,12 @@ class FaceDetectionService {
     _isProcessing = true;
 
     try {
-      final inputImage = _inputImageFromCameraImage(image, rotation);
+      InputImage? inputImage;
+      // If running on iOS, attempt the safer BGRA path first to avoid nil CVPixelBuffer issues
+      if (PlatformHandler.isIOS) {
+        inputImage = IOSImageProcessor.tryCreateFromBGRA(image, rotation);
+      }
+      inputImage ??= _inputImageFromCameraImage(image, rotation);
       if (inputImage == null) {
         _isProcessing = false;
         return null;
@@ -67,16 +74,32 @@ class FaceDetectionService {
   final imageHeight = image.height.toDouble();
 
       // Calculate rotated dimensions
-      final rotatedWidth = (rotation == InputImageRotation.rotation90deg || rotation == InputImageRotation.rotation270deg)
-          ? imageHeight
-          : imageWidth;
-      final rotatedHeight = (rotation == InputImageRotation.rotation90deg || rotation == InputImageRotation.rotation270deg)
-          ? imageWidth
-          : imageHeight;
+      // iOS BGRA: coordinates come in sensor space, use direct dimensions
+      // Android YUV: needs dimension swap based on rotation
+      final rotatedWidth = PlatformHandler.isIOS 
+          ? imageWidth  
+          : (rotation == InputImageRotation.rotation90deg || rotation == InputImageRotation.rotation270deg)
+              ? imageHeight
+              : imageWidth;
+      final rotatedHeight = PlatformHandler.isIOS
+          ? imageHeight 
+          : (rotation == InputImageRotation.rotation90deg || rotation == InputImageRotation.rotation270deg)
+              ? imageWidth
+              : imageHeight;
+      
+      // Debug logging to verify coordinate mapping
+      debugPrint('[FaceDetection] Platform: ${PlatformHandler.isIOS ? "iOS" : "Android"} | Image: ${image.width}×${image.height} | Rotation: $rotation');
+      debugPrint('[FaceDetection] Rotated: $rotatedWidth×$rotatedHeight | FaceBounds: ${faceBounds.left.toInt()},${faceBounds.top.toInt()} ${faceBounds.width.toInt()}×${faceBounds.height.toInt()}');
 
-      // Apply rotation transformation to coordinates
+      // Apply coordinate mirroring ONLY for front camera to match the mirrored preview
+      // This fixes the issue where face guides move opposite to head movement
       Offset rotatePoint(double x, double y) {
-        // Disable rotation - test if coordinates are already correct
+        // Mirror horizontally for front camera (left ↔ right)
+        if (PlatformHandler.isIOS) {
+          // iOS: mirror X coordinate
+          return Offset(imageWidth - x, y);
+        }
+        // Android: no mirroring needed (already handled elsewhere)
         return Offset(x, y);
       }
 
@@ -103,6 +126,8 @@ class FaceDetectionService {
       final heightNorm = ((maxY - minY) / rotatedHeight).clamp(0.0, 1.0);
       final centerXNorm = (leftNorm + widthNorm / 2).clamp(0.0, 1.0);
       final centerYNorm = (topNorm + heightNorm / 2).clamp(0.0, 1.0);
+      
+      debugPrint('[FaceDetection] Normalized: L=${leftNorm.toStringAsFixed(3)} T=${topNorm.toStringAsFixed(3)} W=${widthNorm.toStringAsFixed(3)} H=${heightNorm.toStringAsFixed(3)}');
 
       final normalizedRect = Rect.fromLTWH(leftNorm, topNorm, widthNorm, heightNorm);
 
