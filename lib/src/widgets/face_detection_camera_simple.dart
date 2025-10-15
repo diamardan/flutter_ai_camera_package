@@ -9,6 +9,9 @@ import 'dart:math' as math;
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import '../services/face_detection_service.dart';
+import '../services/lighting_validator.dart';
+import '../services/lighting_corrector.dart';
+import '../models/lighting_analysis.dart';
 import '../crop/simple_cropper.dart';
 
 /// Minimal FaceDetectionCamera implementation in a fresh file.
@@ -47,6 +50,7 @@ class FaceDetectionCameraSimple extends StatefulWidget {
 class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
   CameraController? _controller;
   FaceDetectionService? _faceDetectionService;
+  LightingValidator? _lightingValidator;
   bool _initialized = false;
   bool _isCapturing = false;
   bool _isDisposed = false;
@@ -56,7 +60,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
   Rect? _faceRectNorm; // rectángulo normalizado (0..1)
   List<Offset>? _normLandmarks; // puntos 0..1
   Map<String, List<Offset>>? _normContours; // contornos 0..1
-  double _lightingLevel = 1.0; // 0..1
+  LightingAnalysis? _currentLightingAnalysis;
   bool _hideCameraPreview = false; // para evitar errores de textura durante transición
 
   @override
@@ -97,6 +101,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
   // Bloquear a portrait para evitar cambios de orientación durante la captura
   try { await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp); } catch (_) {}
       _faceDetectionService = FaceDetectionService();
+      _lightingValidator = const LightingValidator(thresholds: LightingThresholds.defaults);
       if (!mounted) { try { await _controller?.dispose(); } catch (_) {} return; }
       setState(() => _initialized = true);
       await _controller!.startImageStream(_processCameraImage);
@@ -109,8 +114,16 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
   void _processCameraImage(CameraImage image) async {
     if (!mounted || _isDisposed || _isCapturing) return;
     try {
-      // Iluminación: promedio del plano Y (NV21)
+      // Análisis de iluminación usando el validador
+      LightingAnalysis? lightingAnalysis;
       try {
+        lightingAnalysis = _lightingValidator?.analyzeYUV420Frame(image);
+        if (lightingAnalysis != null) {
+          _currentLightingAnalysis = lightingAnalysis;
+        }
+      } catch (e) {
+        debugPrint('Lighting analysis error: $e');
+        // Fallback al método anterior si falla
         final bytes = image.planes.first.bytes;
         double sum = 0;
         for (int i = 0; i < bytes.length; i += 50) { // muestreo para rendimiento
@@ -118,8 +131,15 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         }
         final avg = sum / (bytes.length / 50);
         final norm = (avg / 255.0).clamp(0.0, 1.0);
-        _lightingLevel = norm;
-      } catch (_) {}
+        // Crear análisis simple de fallback
+        _currentLightingAnalysis = LightingAnalysis(
+          averageBrightness: norm,
+          contrast: 0.0,
+          state: norm < 0.35 ? LightingState.tooDark : (norm > 0.75 ? LightingState.tooBright : LightingState.optimal),
+          isAcceptable: norm >= 0.20 && norm <= 0.90,
+          canAutoCorrect: false,
+        );
+      }
 
       final rotation = _getRotation();
   final screen = MediaQuery.of(context).size;
@@ -220,24 +240,28 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       final fh = (res.normalizedFaceHeight ?? 0).clamp(0.0, 1.0);
       final distanceOk = fh >= widget.minFaceHeight && fh <= widget.maxFaceHeight;
 
-      // Lighting (informational only)
-      final lowLight = _lightingLevel < 0.25;
+      // Lighting validation - REQUIRED for capture
+      final lightingOk = _currentLightingAnalysis?.isAcceptable ?? true;
+      final lightingMessage = _currentLightingAnalysis?.userMessage;
 
-      // All gates must pass for auto-capture
-      final allValid = res.faceDetected && inside && orientationOk && distanceOk;
+      // All gates must pass for auto-capture (SECUENCIA ESTRICTA)
+      final allValid = res.faceDetected && inside && orientationOk && distanceOk && lightingOk;
 
-      // Status message priority
+      // Status message priority (ORDEN ESTRICTO)
       String nextMsg;
       if (!res.faceDetected) {
         nextMsg = '❌ No se detecta rostro';
       } else if (!inside) {
-        nextMsg = lowLight ? '🔦 Más iluminación' : '🎯 Centra tu rostro';
+        nextMsg = '🎯 Centra tu rostro en el óvalo';
       } else if (!orientationOk) {
         nextMsg = '👀 Mira al frente y endereza tu cabeza';
       } else if (!distanceOk) {
-        nextMsg = fh < widget.minFaceHeight ? 'Acércate un poco' : 'Aléjate un poco';
+        nextMsg = fh < widget.minFaceHeight ? '📏 Acércate un poco' : '📏 Aléjate un poco';
+      } else if (!lightingOk && lightingMessage != null) {
+        // Mostrar mensaje específico de iluminación del análisis
+        nextMsg = '💡 $lightingMessage';
       } else {
-        nextMsg = lowLight ? '🔦 Asegúrate de estar bien iluminado' : '✅ Mantén la posición';
+        nextMsg = '✅ Mantén la posición';
       }
 
       if (allValid) {
@@ -344,6 +368,23 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         debugPrint('[Capture] Stack: $stack');
         // Si falla el crop, usar la imagen original sin recortar
       }
+
+      // Corrección de iluminación (después del recorte, trabaja con menos píxeles)
+      if (_currentLightingAnalysis?.canAutoCorrect == true) {
+        try {
+          debugPrint('[Capture] Applying lighting correction...');
+          final corrected = await LightingCorrector.correctLighting(
+            imageFile: file,
+            analysis: _currentLightingAnalysis!,
+          );
+          file = corrected;
+          debugPrint('[Capture] Lighting corrected: ${file.path}');
+        } catch (e) {
+          debugPrint('[Capture] Lighting correction failed: $e');
+          // Continuar con la imagen sin corregir
+        }
+      }
+
       // Oculta la textura de la cámara durante la navegación para evitar errores de Impeller
   setState(() { _hideCameraPreview = true; });
   // Dejar que Flutter pinte el frame con la textura oculta antes de navegar
