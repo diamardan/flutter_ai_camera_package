@@ -482,13 +482,31 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       debugPrint('[Capture] Starting capture sequence');
       // Stop stream if active to allow still capture
       if (_controller!.value.isStreamingImages) {
-        await _controller!.stopImageStream();
+        debugPrint('[Capture] Stopping image stream...');
+        await _controller!.stopImageStream().timeout(
+          const Duration(seconds: 3),
+          onTimeout: () {
+            debugPrint('[Capture] ⚠️ stopImageStream timeout');
+          },
+        );
+        debugPrint('[Capture] Image stream stopped');
         // tiny delay to let pipeline drain
         await Future.delayed(const Duration(milliseconds: 320));
       }
 
       // Pause preview to reduce BufferQueue pressure on some devices
-  try { await _controller!.pausePreview(); } catch (e) { debugPrint('[Capture] pausePreview error: $e'); }
+      debugPrint('[Capture] Pausing preview...');
+  try { 
+    await _controller!.pausePreview().timeout(
+      const Duration(seconds: 2),
+      onTimeout: () {
+        debugPrint('[Capture] ⚠️ pausePreview timeout');
+      },
+    );
+    debugPrint('[Capture] Preview paused');
+  } catch (e) { 
+    debugPrint('[Capture] pausePreview error: $e'); 
+  }
   // Pequeña espera tras pausar preview para asegurar drenado
   await Future.delayed(const Duration(milliseconds: 80));
       try { await _controller!.setFlashMode(FlashMode.off); } catch (_) {}

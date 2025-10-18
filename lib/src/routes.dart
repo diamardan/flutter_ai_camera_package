@@ -22,6 +22,7 @@ GoRoute datamexOverlayRoute({
       bool useFD = useFaceDetection || qp['useFaceDetection'] == 'true';
       bool startsSelfie = false;
       bool showFaceGuides = true;
+      // ❌ removeBackground se lee del PROVIDER, no del extra
       if (extra is Map) {
         if (extra['useFaceDetection'] is bool) useFD = extra['useFaceDetection'] as bool;
         if (extra['startsWithSelfie'] is bool) startsSelfie = extra['startsWithSelfie'] as bool;
@@ -33,6 +34,7 @@ GoRoute datamexOverlayRoute({
           useFaceDetection: useFD,
           startsWithSelfie: startsSelfie,
           showFaceGuides: showFaceGuides,
+          // removeBackground se lee internamente del provider
         ),
       );
     },

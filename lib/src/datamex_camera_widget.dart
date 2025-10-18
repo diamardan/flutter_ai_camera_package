@@ -28,8 +28,6 @@ class DatamexCameraWidget extends ConsumerStatefulWidget {
     this.imageProvider,
     this.showOverlay = false,
     this.useFaceDetection = true,
-    @Deprecated('Use datamexRemoveBackgroundProvider instead')
-    this.removeBackground = true, // Deprecated: usar provider en su lugar
     this.acceptChooseImageFromGallery = false,
     this.handleServerPhoto = false,
     this.serverPhotoId = '',
@@ -48,8 +46,6 @@ class DatamexCameraWidget extends ConsumerStatefulWidget {
   final StateProvider<File?>? imageProvider;
   final bool showOverlay;
   final bool useFaceDetection;
-  @Deprecated('Use datamexRemoveBackgroundProvider instead')
-  final bool removeBackground; // Deprecated: usar provider
   final bool acceptChooseImageFromGallery;
   final bool handleServerPhoto;
   final String serverPhotoId;
@@ -76,7 +72,10 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
   /// Procesa la imagen removiendo el fondo si está habilitado
   /// Retorna la imagen procesada o la original si falla
   Future<File> _processImage(File file) async {
-    if (!widget.removeBackground) {
+    // ✅ Leer desde provider (configurado por la app host)
+    final removeBackground = ref.read(datamexRemoveBackgroundProvider);
+    
+    if (!removeBackground) {
       return file; // Sin procesamiento
     }
 
@@ -402,7 +401,7 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
                         startsWithSelfie: widget.startsWithSelfieCamera,
                         showOverlay: widget.showOverlay,
                         showFaceGuides: widget.showFaceGuides,
-                        removeBackground: widget.removeBackground, // ✅ Pasar parámetro
+                        // removeBackground se lee del provider, no se pasa por extra
                       ),
                     );
                     if (!mounted) return;
@@ -425,6 +424,7 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
                         'startsWithSelfie': widget.startsWithSelfieCamera,
                         'showOverlay': widget.showOverlay,
                         'showFaceGuides': widget.showFaceGuides,
+                        // removeBackground se lee del provider, no se pasa por extra
                       },
                     );
                     if (!mounted) return;

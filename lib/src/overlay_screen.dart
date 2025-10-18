@@ -1,15 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'widgets/face_detection_camera_simple.dart';
+import 'providers.dart';
 import 'dart:io';
 
-class DatamexCameraOverlayScreen extends StatefulWidget {
+class DatamexCameraOverlayScreen extends ConsumerStatefulWidget {
   final bool startsWithSelfie;
   final bool pickFromGalleryInitially;
   final bool useFaceDetection;
   final bool showFaceGuides;
-  final bool removeBackground; // ✅ Nuevo parámetro
 
   const DatamexCameraOverlayScreen({
     super.key,
@@ -17,16 +18,15 @@ class DatamexCameraOverlayScreen extends StatefulWidget {
     this.pickFromGalleryInitially = false,
     this.useFaceDetection = false,
     this.showFaceGuides = true,
-    this.removeBackground = true, // ✅ Default true
   });
 
   @override
-  State<DatamexCameraOverlayScreen> createState() =>
+  ConsumerState<DatamexCameraOverlayScreen> createState() =>
       _DatamexCameraOverlayScreenState();
 }
 
 class _DatamexCameraOverlayScreenState
-    extends State<DatamexCameraOverlayScreen> {
+    extends ConsumerState<DatamexCameraOverlayScreen> {
   final ImagePicker _picker = ImagePicker();
 
   @override
@@ -48,13 +48,16 @@ class _DatamexCameraOverlayScreenState
     if (!mounted) return;
 
     if (status.isGranted) {
+      // ✅ Leer removeBackground del provider
+      final removeBackground = ref.read(datamexRemoveBackgroundProvider);
+      
       final file = await Navigator.of(context).push<File?>(
         MaterialPageRoute(
           builder: (_) => FaceDetectionCameraSimple(
             // En flujo de detección facial usamos SIEMPRE la cámara frontal (selfie)
             useFrontCamera: true,
             showFaceGuides: widget.showFaceGuides,
-            removeBackground: widget.removeBackground, // ✅ Pasar parámetro
+            removeBackground: removeBackground, // ✅ Desde provider
             // Callback no-op: la imagen ya está procesada dentro de la cámara
             onImageCaptured: (_) async {
               // Ya procesada, solo esperar

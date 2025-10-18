@@ -1,4 +1,4 @@
-library datamex_camera_package;
+library itc_camera_package;
 
 export 'src/datamex_camera_widget.dart';
 export 'src/providers.dart';

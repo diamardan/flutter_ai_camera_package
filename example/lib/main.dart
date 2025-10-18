@@ -131,6 +131,7 @@ class HomePage extends ConsumerWidget {
                       const SizedBox(height: 16),
                       DatamexCameraWidget(
                         // Usar las configuraciones de los providers
+                        // removeBackground se configura vía provider (datamexRemoveBackgroundProvider)
                         showOverlay: showOverlay,
                         useFaceDetection: useFaceDetection,
                         acceptChooseImageFromGallery: acceptGallery,
