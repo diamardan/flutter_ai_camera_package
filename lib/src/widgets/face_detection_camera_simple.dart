@@ -77,6 +77,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
   LightingAnalysis? _currentLightingAnalysis;
   bool _hideCameraPreview = false; // para evitar errores de textura durante transición
   bool _isProcessing = false; // Flag para mantener animación durante procesamiento post-captura
+  bool _processingDialogOpen = false; // Para asegurar cierre en todos los flujos
   
   // 🎯 SISTEMA DE PASOS PROGRESIVOS
   CaptureStep _currentStep = CaptureStep.step2FaceCentering; // ✅ Iniciar directo en paso 2
@@ -440,43 +441,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
     });
     
     // 🎨 Mostrar dialog de procesamiento INMEDIATAMENTE
-    if (mounted) {
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        barrierColor: Colors.black87,
-        builder: (dialogContext) => PopScope(
-          canPop: false,
-          child: Material(
-            color: Colors.transparent,
-            child: Center(
-              child: Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: const Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    CircularProgressIndicator(strokeWidth: 3),
-                    SizedBox(height: 20),
-                    Text(
-                      'Procesando imagen...',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.black87,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
+    _openProcessingDialog();
     
     try {
       debugPrint('[Capture] Starting capture sequence');
@@ -665,8 +630,8 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       await widget.onImageCaptured(file);
       
       // Cerrar dialog de procesamiento
+      _closeProcessingDialog();
       if (mounted) {
-        Navigator.of(context, rootNavigator: true).pop(); // Cerrar dialog
         setState(() {
           _statusMessage = '✅ Imagen procesada';
           _isProcessing = false;
@@ -714,9 +679,14 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       }
     } catch (e) {
       debugPrint('Capture error: $e');
+      // Asegurar cierre del diálogo en caso de error
+      _closeProcessingDialog();
       if (mounted) {
         _showError('Error al capturar la imagen');
-        setState(() => _isCapturing = false);
+        setState(() {
+          _isCapturing = false;
+          _isProcessing = false;
+        });
       }
       // Try to recover stream for user to retry
       try {
@@ -728,6 +698,65 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
           setState(() { _hideCameraPreview = false; });
         }
       } catch (_) {}
+    } finally {
+      // Cierre defensivo del diálogo si por algún motivo siguiera abierto
+      _closeProcessingDialog();
+    }
+  }
+
+  void _openProcessingDialog() {
+    if (!mounted || _processingDialogOpen) return;
+    try {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        barrierColor: Colors.black87,
+        builder: (dialogContext) => PopScope(
+          canPop: false,
+          child: Material(
+            color: Colors.transparent,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: const Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(strokeWidth: 3),
+                    SizedBox(height: 20),
+                    Text(
+                      'Procesando imagen...',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black87,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      _processingDialogOpen = true;
+    } catch (e) {
+      debugPrint('[Capture] showDialog error: $e');
+    }
+  }
+
+  void _closeProcessingDialog() {
+    if (!_processingDialogOpen) return;
+    if (!mounted) { _processingDialogOpen = false; return; }
+    try {
+      Navigator.of(context, rootNavigator: true).maybePop();
+    } catch (e) {
+      debugPrint('[Capture] close dialog error: $e');
+    } finally {
+      _processingDialogOpen = false;
     }
   }
 
