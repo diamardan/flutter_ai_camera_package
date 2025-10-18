@@ -1,5 +1,5 @@
-name: datamex_camera_package
-description: Enhanced Datamex camera widget with AI face detection (Riverpod + go_router ready)
+name: itc_camera_package
+description: Enhanced ITC camera widget with AI face detection (Riverpod + go_router ready)
 version: 1.0.0
 publish_to: "none"
 
