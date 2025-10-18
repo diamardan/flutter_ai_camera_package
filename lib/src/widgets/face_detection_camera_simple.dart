@@ -476,7 +476,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
   await Future.delayed(const Duration(milliseconds: 80));
       try { await _controller!.setFlashMode(FlashMode.off); } catch (_) {}
 
-      // Attempt capture with small retries (handles transient ImageReader issues)
+      // Attempt capture with small retries and per-attempt timeout
       XFile pic;
       int attempts = 0;
       while (true) {
@@ -486,10 +486,20 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
           if (_controller!.value.isTakingPicture) {
             await Future.delayed(const Duration(milliseconds: 60));
           }
-          pic = await _controller!.takePicture();
+          pic = await _controller!.takePicture().timeout(
+            const Duration(seconds: 5),
+            onTimeout: () {
+              throw TimeoutException('takePicture timeout');
+            },
+          );
           break;
         } catch (e) {
           debugPrint('[Capture] takePicture attempt $attempts failed: $e');
+          // Try to recover preview between retries
+          try { await _controller!.resumePreview(); } catch (_) {}
+          if (!_controller!.value.isStreamingImages) {
+            try { await _controller!.startImageStream(_processCameraImage); } catch (_) {}
+          }
           if (attempts >= 3) rethrow;
           await Future.delayed(Duration(milliseconds: 150 * attempts));
         }
