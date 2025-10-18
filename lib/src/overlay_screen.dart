@@ -9,6 +9,7 @@ class DatamexCameraOverlayScreen extends StatefulWidget {
   final bool pickFromGalleryInitially;
   final bool useFaceDetection;
   final bool showFaceGuides;
+  final bool removeBackground; // ✅ Nuevo parámetro
 
   const DatamexCameraOverlayScreen({
     super.key,
@@ -16,6 +17,7 @@ class DatamexCameraOverlayScreen extends StatefulWidget {
     this.pickFromGalleryInitially = false,
     this.useFaceDetection = false,
     this.showFaceGuides = true,
+    this.removeBackground = true, // ✅ Default true
   });
 
   @override
@@ -52,14 +54,17 @@ class _DatamexCameraOverlayScreenState
             // En flujo de detección facial usamos SIEMPRE la cámara frontal (selfie)
             useFrontCamera: true,
             showFaceGuides: widget.showFaceGuides,
-            // Callback no-op: la cámara maneja el pop con el File.
-            onImageCaptured: (_) {},
+            removeBackground: widget.removeBackground, // ✅ Pasar parámetro
+            // Callback no-op: la imagen ya está procesada dentro de la cámara
+            onImageCaptured: (_) async {
+              // Ya procesada, solo esperar
+            },
           ),
           fullscreenDialog: true,
         ),
       );
       if (!mounted) return;
-      // Propagar el resultado al caller que abrió el overlay
+      // Propagar el resultado al caller - imagen YA PROCESADA
       Navigator.of(context).pop(file);
     } else {
       _showPermissionDenied('cámara');

@@ -19,6 +19,8 @@ class GuidelinesConfig {
   final bool showOverlay;
   /// Controls showing facial landmarks/contours guides in overlay.
   final bool showFaceGuides;
+  /// Whether to remove background from captured images
+  final bool removeBackground;
   const GuidelinesConfig({
     required this.guidelines,
     required this.showAcceptanceCheckbox,
@@ -27,5 +29,6 @@ class GuidelinesConfig {
     required this.startsWithSelfie,
     required this.showOverlay,
     this.showFaceGuides = true,
+    this.removeBackground = true, // ✅ Default true
   });
 }

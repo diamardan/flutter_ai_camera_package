@@ -1,19 +1,28 @@
 import 'dart:io';
+import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image/image.dart' as img;
 import 'package:flutter/foundation.dart' show compute;
-// removed: 'dart:typed_data' (Uint8List is available via flutter services import per analyzer)
 import 'dart:math' as math;
 import 'package:camera/camera.dart';
+import 'package:local_rembg/local_rembg.dart';
 import '../core/platform_handler.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import '../services/face_detection_service.dart';
 import '../services/lighting_validator.dart';
-import '../services/lighting_corrector.dart';
 import '../models/lighting_analysis.dart';
 import '../crop/simple_cropper.dart';
+import '../services/edge_refinement_service.dart';
+
+/// 🎯 Enum para el sistema de pasos progresivos de captura
+enum CaptureStep {
+  step1EyesAlignment,   // Paso 1: Alinear ojos (overlay pequeño, solo ojos)
+  step2FaceCentering,   // Paso 2: Centrar rostro (overlay mediano, cabeza completa)
+  step3FinalCapture,    // Paso 3: Captura final (overlay completo, cabeza+hombros)
+}
 
 /// Minimal FaceDetectionCamera implementation in a fresh file.
 class FaceDetectionCameraSimple extends StatefulWidget {
@@ -21,6 +30,8 @@ class FaceDetectionCameraSimple extends StatefulWidget {
   final Function(File?) onImageCaptured;
   final int requiredValidFrames;
   final bool showFaceGuides;
+  final bool removeBackground; // ✅ Nuevo parámetro
+  final Function(String)? onStatusMessage; // ✅ Callback para mensajes
   // Validation thresholds
   final double yawMaxDegrees;   // left/right turn tolerance
   final double pitchMaxDegrees; // up/down tilt tolerance
@@ -36,6 +47,8 @@ class FaceDetectionCameraSimple extends StatefulWidget {
     required this.onImageCaptured,
     this.requiredValidFrames = 5,
     this.showFaceGuides = true,
+    this.removeBackground = true, // ✅ Default true
+    this.onStatusMessage,
     this.yawMaxDegrees = 10.0,
     this.pitchMaxDegrees = 10.0,
     this.rollMaxDegrees = 8.0,
@@ -63,11 +76,37 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
   Map<String, List<Offset>>? _normContours; // contornos 0..1
   LightingAnalysis? _currentLightingAnalysis;
   bool _hideCameraPreview = false; // para evitar errores de textura durante transición
+  bool _isProcessing = false; // Flag para mantener animación durante procesamiento post-captura
+  
+  // 🎯 SISTEMA DE PASOS PROGRESIVOS
+  CaptureStep _currentStep = CaptureStep.step2FaceCentering; // ✅ Iniciar directo en paso 2
+  int _stepValidFrames = 0; // Frames válidos en el paso actual
+  
+  // Configuración de frames requeridos por paso (REDUCIDOS)
+  static const int _step1RequiredFrames = 0; // Paso 1: SALTADO
+  static const int _step2RequiredFrames = 10; // Paso 2: 10 frames (~0.3s)
+  static const int _step3RequiredFrames = 10; // Paso 3: 10 frames (~0.3s) antes de captura
+  
+  // Animación continua para evitar sensación de freeze
+  double _animationProgress = 0.0;
+  Timer? _animationTimer;
 
   @override
   void initState() {
     super.initState();
     _init();
+    _startAnimationTimer(); // Iniciar animación continua
+  }
+  
+  /// 🎨 Animación continua para evitar sensación de freeze durante procesamiento
+  void _startAnimationTimer() {
+    _animationTimer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
+      if (mounted) {
+        setState(() {
+          _animationProgress = (_animationProgress + 0.05) % 1.0;
+        });
+      }
+    });
   }
 
   Future<void> _init() async {
@@ -245,42 +284,133 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       final lightingOk = _currentLightingAnalysis?.isAcceptable ?? true;
       final lightingMessage = _currentLightingAnalysis?.userMessage;
 
-      // All gates must pass for auto-capture (SECUENCIA ESTRICTA)
-      final allValid = res.faceDetected && inside && orientationOk && distanceOk && lightingOk;
+      // 🎯 SISTEMA DE PASOS PROGRESIVOS (2 PASOS)
+      // Paso 1 SALTADO - Comenzamos directo en Paso 2
+      
+      bool stepValid = false;
+      String nextMsg = '';
+      int currentRequired = 0;
+      double progressPercentage = 0.0;
+      
+      switch (_currentStep) {
+        case CaptureStep.step1EyesAlignment:
+          // ⏭️ PASO 1: SALTADO (no se usa)
+          stepValid = false;
+          nextMsg = '';
+          break;
 
-      // Status message priority (ORDEN ESTRICTO)
-      String nextMsg;
-      if (!res.faceDetected) {
-        nextMsg = '❌ No se detecta rostro';
-      } else if (!inside) {
-        nextMsg = '🎯 Centra tu rostro en el óvalo';
-      } else if (!orientationOk) {
-        nextMsg = '👀 Mira al frente y endereza tu cabeza';
-      } else if (!distanceOk) {
-        nextMsg = fh < widget.minFaceHeight ? '📏 Acércate un poco' : '📏 Aléjate un poco';
-      } else if (!lightingOk && lightingMessage != null) {
-        // Mostrar mensaje específico de iluminación del análisis
-        nextMsg = '💡 $lightingMessage';
-      } else {
-        nextMsg = '✅ Mantén la posición';
+        case CaptureStep.step2FaceCentering:
+          // PASO 2: Validar que toda la CABEZA esté centrada (overlay mediano, 45%)
+          final faceInOval = res.faceDetected && inside && distanceOk;
+          stepValid = faceInOval && orientationOk;
+          currentRequired = _step2RequiredFrames;
+          progressPercentage = (_stepValidFrames / currentRequired * 100).clamp(0.0, 100.0);
+          
+          if (!res.faceDetected) {
+            nextMsg = '❌ No se detecta rostro';
+          } else if (!inside) {
+            nextMsg = '🎯 Coloca tu rostro en el óvalo y permanece quieto';
+          } else if (!distanceOk) {
+            nextMsg = fh < widget.minFaceHeight ? '📏 Acércate un poco' : '📏 Aléjate un poco';
+          } else if (!orientationOk) {
+            nextMsg = '👀 Mira al frente';
+          } else {
+            nextMsg = '✅ Preparando... ${progressPercentage.toStringAsFixed(0)}%';
+          }
+          break;
+
+        case CaptureStep.step3FinalCapture:
+          // PASO 3: Validación COMPLETA (overlay 100%, incluye hombros)
+          final allValid = res.faceDetected && inside && orientationOk && distanceOk && lightingOk;
+          stepValid = allValid;
+          currentRequired = _step3RequiredFrames;
+          progressPercentage = (_stepValidFrames / currentRequired * 100).clamp(0.0, 100.0);
+          
+          if (!res.faceDetected) {
+            nextMsg = '❌ No se detecta rostro';
+          } else if (!inside) {
+            nextMsg = '🎯 Mantén tu rostro centrado';
+          } else if (!orientationOk) {
+            nextMsg = '👀 Mira al frente';
+          } else if (!distanceOk) {
+            nextMsg = fh < widget.minFaceHeight ? '📏 Acércate un poco' : '📏 Aléjate un poco';
+          } else if (!lightingOk && lightingMessage != null) {
+            nextMsg = '💡 $lightingMessage';
+          } else {
+            nextMsg = '📸 Capturando... ${progressPercentage.toStringAsFixed(0)}%';
+          }
+          break;
       }
 
-      if (allValid) {
-        _validFrames++;
-        if (mounted && (!_insideOval || _statusMessage != nextMsg)) {
-          setState(() {
-            _insideOval = true;
-            _statusMessage = nextMsg;
-          });
-        } else if (mounted) {
-          setState(() {});
+      // Actualizar contadores y transiciones de pasos
+      if (stepValid) {
+        _stepValidFrames++;
+        _validFrames++; // Mantener backward compatibility
+        
+        // Verificar si completamos el paso actual
+        bool stepCompleted = false;
+        switch (_currentStep) {
+          case CaptureStep.step1EyesAlignment:
+            stepCompleted = _stepValidFrames >= _step1RequiredFrames;
+            break;
+          case CaptureStep.step2FaceCentering:
+            stepCompleted = _stepValidFrames >= _step2RequiredFrames;
+            break;
+          case CaptureStep.step3FinalCapture:
+            stepCompleted = _stepValidFrames >= _step3RequiredFrames;
+            break;
         }
-        if (_validFrames >= widget.requiredValidFrames) await _captureImage();
+        
+        if (stepCompleted) {
+          // Transición al siguiente paso
+          switch (_currentStep) {
+            case CaptureStep.step1EyesAlignment:
+              debugPrint('[CaptureSteps] ✅ Paso 1 completado → Avanzando a Paso 2');
+              if (mounted) {
+                setState(() {
+                  _currentStep = CaptureStep.step2FaceCentering;
+                  _stepValidFrames = 0;
+                  _statusMessage = '🎯 Ahora centra toda tu cabeza';
+                });
+              }
+              break;
+              
+            case CaptureStep.step2FaceCentering:
+              debugPrint('[CaptureSteps] ✅ Paso 2 completado → Avanzando a Paso 3 (Final)');
+              if (mounted) {
+                setState(() {
+                  _currentStep = CaptureStep.step3FinalCapture;
+                  _stepValidFrames = 0;
+                  _statusMessage = '📸 Preparando captura final...';
+                });
+              }
+              break;
+              
+            case CaptureStep.step3FinalCapture:
+              debugPrint('[CaptureSteps] ✅ Paso 3 completado → CAPTURANDO FOTO');
+              await _captureImage();
+              break;
+          }
+        } else {
+          // Actualizar UI con progreso
+          if (mounted && (!_insideOval || _statusMessage != nextMsg)) {
+            setState(() {
+              _insideOval = true;
+              _statusMessage = nextMsg;
+            });
+          } else if (mounted) {
+            setState(() {});
+          }
+        }
       } else {
+        // Step validation failed - decay gracefully
+        final newStepValid = (_stepValidFrames - 2).clamp(0, 100); // Decay más rápido en pasos
         final newValid = (_validFrames - 1).clamp(0, widget.requiredValidFrames);
-        if (mounted && (_validFrames != newValid || _insideOval || _statusMessage != nextMsg)) {
+        
+        if (mounted && (_stepValidFrames != newStepValid || _validFrames != newValid || _insideOval || _statusMessage != nextMsg)) {
           setState(() {
             _insideOval = false;
+            _stepValidFrames = newStepValid;
             _validFrames = newValid;
             _statusMessage = nextMsg;
           });
@@ -302,7 +432,52 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
   Future<void> _captureImage() async {
     if (_isCapturing || _controller == null || !_controller!.value.isInitialized) return;
     if (!mounted) return;
-    setState(() => _isCapturing = true);
+    
+    setState(() {
+      _isCapturing = true;
+      _isProcessing = true;
+      _statusMessage = '⏳ Capturando imagen...';
+    });
+    
+    // 🎨 Mostrar dialog de procesamiento INMEDIATAMENTE
+    if (mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        barrierColor: Colors.black87,
+        builder: (dialogContext) => PopScope(
+          canPop: false,
+          child: Material(
+            color: Colors.transparent,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: const Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(strokeWidth: 3),
+                    SizedBox(height: 20),
+                    Text(
+                      'Procesando imagen...',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black87,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    
     try {
       debugPrint('[Capture] Starting capture sequence');
       // Stop stream if active to allow still capture
@@ -357,6 +532,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         // Si hay bytes espejados, usarlos; si no, leer del archivo original
         final bytesToCrop = mirroredBytes ?? await file.readAsBytes();
         debugPrint('[Capture] Cropping ${bytesToCrop.length} bytes');
+        debugPrint('[Capture] Original file size: ${file.lengthSync()} bytes');
         
         final cropped = await SimpleCropper.cropTo34(bytesToCrop);
         file = cropped;
@@ -364,6 +540,10 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         debugPrint('[Capture] Cropped file path: ${file.path}');
         debugPrint('[Capture] Cropped file exists: ${file.existsSync()}');
         debugPrint('[Capture] Cropped file size: ${file.existsSync() ? file.lengthSync() : 0} bytes');
+        
+        // Verificar que la imagen no esté corrupta
+        final croppedBytes = await file.readAsBytes();
+        debugPrint('[Capture] Cropped bytes readable: ${croppedBytes.length} bytes');
       } catch (e, stack) {
         debugPrint('[Capture] Crop failed: $e');
         debugPrint('[Capture] Stack: $stack');
@@ -371,19 +551,108 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       }
 
       // Corrección de iluminación (después del recorte, trabaja con menos píxeles)
+      // TEMPORALMENTE DESHABILITADA PARA DEBUGGING
+      /*
       if (_currentLightingAnalysis?.canAutoCorrect == true) {
         try {
+          debugPrint('[Capture] Current lighting analysis: $_currentLightingAnalysis');
           debugPrint('[Capture] Applying lighting correction...');
+          debugPrint('[Capture] File before correction: ${file.path}, size: ${file.lengthSync()} bytes');
+          
           final corrected = await LightingCorrector.correctLighting(
             imageFile: file,
             analysis: _currentLightingAnalysis!,
           );
+          
+          debugPrint('[Capture] File after correction: ${corrected.path}, size: ${corrected.lengthSync()} bytes');
+          debugPrint('[Capture] Files are same: ${file.path == corrected.path}');
+          
           file = corrected;
-          debugPrint('[Capture] Lighting corrected: ${file.path}');
-        } catch (e) {
+          debugPrint('[Capture] Lighting correction completed: ${file.path}');
+        } catch (e, stack) {
           debugPrint('[Capture] Lighting correction failed: $e');
+          debugPrint('[Capture] Stack: $stack');
           // Continuar con la imagen sin corregir
         }
+      } else {
+        debugPrint('[Capture] Skipping lighting correction - canAutoCorrect: ${_currentLightingAnalysis?.canAutoCorrect}');
+      }
+      */
+      debugPrint('[Capture] ⚠️ Lighting correction DISABLED for debugging white preview issue');
+
+      // ✅ PROCESAR IMAGEN (removeBackground + edge refinement) ANTES DE PREVIEW
+      if (widget.removeBackground) {
+        debugPrint('[Capture] Starting background removal process...');
+        
+        try {
+          // Usar Local Rembg (podría parametrizarse luego)
+          final stopwatch = Stopwatch()..start();
+          
+          final LocalRembgResultModel result = await LocalRembg.removeBackground(
+            imagePath: file.path,
+            cropTheImage: true,
+          ).timeout(
+            const Duration(seconds: 20),
+            onTimeout: () {
+              throw TimeoutException('Background removal timeout');
+            },
+          );
+          
+          stopwatch.stop();
+          debugPrint('[Capture] Background removal completed in ${stopwatch.elapsedMilliseconds}ms');
+          
+          if (result.imageBytes != null && result.imageBytes!.isNotEmpty) {
+            // Aplicar edge refinement si está disponible
+            Uint8List finalBytes = Uint8List.fromList(result.imageBytes!);
+            
+            try {
+              final refined = await EdgeRefinementService.refineEdges(
+                imageBytes: finalBytes,
+                intensity: 3, // Intensidad por defecto
+              );
+              if (refined != null) {
+                finalBytes = refined;
+                debugPrint('[Capture] Edge refinement applied');
+              }
+            } catch (e) {
+              debugPrint('[Capture] Edge refinement failed, using unrefined: $e');
+            }
+            
+            // Guardar imagen procesada
+            final timestamp = DateTime.now().millisecondsSinceEpoch;
+            final processedPath = file.path.replaceAll(
+              RegExp(r'\.(jpg|jpeg|png)$', caseSensitive: false),
+              '_processed_$timestamp.png',
+            );
+            
+            final processedFile = File(processedPath);
+            await processedFile.writeAsBytes(finalBytes);
+            
+            if (await processedFile.exists()) {
+              file = processedFile; // ← Usar imagen procesada
+              debugPrint('[Capture] Processed image saved: $processedPath');
+            }
+          }
+        } on TimeoutException catch (e) {
+          debugPrint('[Capture] ⚠️ Timeout: $e - using original image');
+        } catch (e, stack) {
+          debugPrint('[Capture] ❌ Background removal error: $e');
+          debugPrint('[Capture] Stack: $stack');
+          // Continuar con imagen original
+        }
+      }
+      
+      // El callback onImageCaptured recibe la imagen YA PROCESADA
+      debugPrint('[Capture] Calling onImageCaptured with processed image...');
+      await widget.onImageCaptured(file);
+      
+      // Cerrar dialog de procesamiento
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop(); // Cerrar dialog
+        setState(() {
+          _statusMessage = '✅ Imagen procesada';
+          _isProcessing = false;
+        });
       }
 
       // Oculta la textura de la cámara durante la navegación para evitar errores de Impeller
@@ -420,6 +689,8 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         setState(() {
           _isCapturing = false;
           _validFrames = 0;
+          _stepValidFrames = 0; // Reset paso actual
+          _currentStep = CaptureStep.step2FaceCentering; // Volver al paso 2 (saltamos paso 1)
           _hideCameraPreview = false;
         });
       }
@@ -476,6 +747,8 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
                             faceRectNorm: _faceRectNorm,
                             landmarksNorm: widget.showFaceGuides ? _normLandmarks : null,
                             contoursNorm: widget.showFaceGuides ? _normContours : null,
+                            currentStep: _currentStep,
+                            animationProgress: _animationProgress, // 🎨 Animación continua
                           ),
                         ),
                       )
@@ -486,30 +759,92 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
                             faceRectNorm: _faceRectNorm,
                             landmarksNorm: widget.showFaceGuides ? _normLandmarks : null,
                             contoursNorm: widget.showFaceGuides ? _normContours : null,
+                            currentStep: _currentStep,
+                            animationProgress: _animationProgress, // 🎨 Animación continua
                           ),
                       ),
               ]),
             ),
           ),
         ),
-        // Mensaje guía (anclado a pantalla)
+        // 📝 TEXTO DE INSTRUCCIONES (parte superior)
         Positioned(
-          bottom: 48,
+          top: 60,
+          left: 16,
+          right: 16,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.75),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.3), width: 1),
+            ),
+            child: Column(
+              children: [
+                const Text(
+                  '📸 Siga las instrucciones en pantalla',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'La fotografía se tomará automáticamente',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.85),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        // 💬 MENSAJE DE ESTADO (parte superior, debajo de instrucciones)
+        Positioned(
+          top: 155,
           left: 16,
           right: 16,
           child: AnimatedOpacity(
-            duration: const Duration(milliseconds: 120),
+            duration: const Duration(milliseconds: 150),
             opacity: 1.0,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
               decoration: BoxDecoration(
-                color: _insideOval ? Colors.green.withValues(alpha: 0.9) : Colors.black.withValues(alpha: 0.7),
-                borderRadius: BorderRadius.circular(12),
+                color: _isProcessing 
+                  ? Colors.blue.withValues(alpha: 0.9) // Azul durante procesamiento
+                  : _insideOval 
+                    ? Colors.green.withValues(alpha: 0.9) 
+                    : Colors.orange.withValues(alpha: 0.85),
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.3),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
               ),
               child: Text(
-                _statusMessage.isEmpty ? 'Coloca tu rostro dentro del marco' : _statusMessage,
+                _statusMessage.isEmpty ? '🎯 Coloca tu rostro en el óvalo' : _statusMessage,
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                  shadows: [
+                    Shadow(
+                      color: Colors.black45,
+                      blurRadius: 2,
+                      offset: Offset(0, 1),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -521,6 +856,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
   @override
   void dispose() {
     _isDisposed = true;
+    _animationTimer?.cancel(); // Cancelar timer de animación
     try { _controller?.dispose(); } catch (_) {}
     _faceDetectionService?.dispose();
     super.dispose();
@@ -532,11 +868,16 @@ class _SimpleOverlayPainter extends CustomPainter {
   final Rect? faceRectNorm; // 0..1
   final List<Offset>? landmarksNorm; // 0..1
   final Map<String, List<Offset>>? contoursNorm; // 0..1
+  final CaptureStep currentStep; // 🎯 Paso actual para cambiar tamaño de overlay
+  final double animationProgress; // 🎨 Progreso de animación continua (0-1)
+  
   const _SimpleOverlayPainter({
     this.progress = 0.0,
     this.faceRectNorm,
     this.landmarksNorm,
     this.contoursNorm,
+    this.currentStep = CaptureStep.step2FaceCentering, // Inicio en paso 2
+    this.animationProgress = 0.0,
   });
 
   @override
@@ -545,14 +886,89 @@ class _SimpleOverlayPainter extends CustomPainter {
     final layer = Offset.zero & size;
     canvas.saveLayer(layer, Paint());
     canvas.drawRect(layer, overlay);
-  final cx = size.width / 2, cy = size.height / 2;
-  // Ovalo más estrecho con altura previa: ~56% ancho, ~50% alto
-  final ow = size.width * 0.56, oh = size.height * 0.50;
+    
+    final cx = size.width / 2, cy = size.height / 2;
+    
+    // 🎯 TAMAÑO DE OVERLAY SEGÚN EL PASO ACTUAL
+    double ovalWidthFactor;
+    double ovalHeightFactor;
+    Color ovalColor;
+    
+    switch (currentStep) {
+      case CaptureStep.step1EyesAlignment:
+        // Paso 1: Círculo pequeño para OJOS (25% del tamaño normal)
+        ovalWidthFactor = 0.30; // 30% del ancho
+        ovalHeightFactor = 0.20; // 20% del alto (circular en zona de ojos)
+        ovalColor = Colors.cyan; // Color distintivo para paso 1
+        break;
+        
+      case CaptureStep.step2FaceCentering:
+        // Paso 2: Óvalo mediano para CABEZA (60% del tamaño normal)
+        ovalWidthFactor = 0.45; // 45% del ancho
+        ovalHeightFactor = 0.35; // 35% del alto (cabeza completa)
+        ovalColor = Colors.amber; // Color distintivo para paso 2
+        break;
+        
+      case CaptureStep.step3FinalCapture:
+        // Paso 3: Óvalo completo para CABEZA + HOMBROS (tamaño original)
+        ovalWidthFactor = 0.56; // 56% del ancho
+        ovalHeightFactor = 0.50; // 50% del alto (incluye hombros)
+        ovalColor = Colors.greenAccent; // Color distintivo para paso 3
+        break;
+    }
+    
+    final ow = size.width * ovalWidthFactor;
+    final oh = size.height * ovalHeightFactor;
+    
     final clear = Paint()..blendMode = BlendMode.clear;
     canvas.drawOval(Rect.fromCenter(center: Offset(cx, cy), width: ow, height: oh), clear);
-    final border = Paint()..style = PaintingStyle.stroke..strokeWidth = 3..color = Colors.white70;
-    canvas.drawOval(Rect.fromCenter(center: Offset(cx, cy), width: ow, height: oh), border);
+    
     canvas.restore();
+    
+    // 🎨 ANIMACIÓN ROTATIVA ALREDEDOR DEL ÓVALO (evita sensación de freeze)
+    // Dibuja 3 arcos pulsantes que rotan continuamente
+    final animAngle = animationProgress * 2 * math.pi;
+    final arcLength = math.pi / 6; // 30 grados por arco
+    
+    final animatedBorder = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.round
+      ..color = ovalColor.withOpacity(0.9);
+    
+    // Arco 1 (superior)
+    canvas.drawArc(
+      Rect.fromCenter(center: Offset(cx, cy), width: ow + 10, height: oh + 10),
+      animAngle,
+      arcLength,
+      false,
+      animatedBorder,
+    );
+    
+    // Arco 2 (medio, 120° desfasado)
+    canvas.drawArc(
+      Rect.fromCenter(center: Offset(cx, cy), width: ow + 10, height: oh + 10),
+      animAngle + (2 * math.pi / 3),
+      arcLength,
+      false,
+      animatedBorder,
+    );
+    
+    // Arco 3 (inferior, 240° desfasado)
+    canvas.drawArc(
+      Rect.fromCenter(center: Offset(cx, cy), width: ow + 10, height: oh + 10),
+      animAngle + (4 * math.pi / 3),
+      arcLength,
+      false,
+      animatedBorder,
+    );
+    
+    // Borde principal con color según el paso
+    final border = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = ovalColor.withOpacity(0.8);
+    canvas.drawOval(Rect.fromCenter(center: Offset(cx, cy), width: ow, height: oh), border);
 
     // Marcas de registro (esquinas) usando normalizado → pixeles
     if (faceRectNorm != null) {
@@ -657,8 +1073,16 @@ class _InlinePreview extends StatelessWidget {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('Previsualización'),
+        title: const Text(
+          'Previsualización',
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
         backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        elevation: 0,
       ),
       body: Stack(
         children: [
@@ -669,31 +1093,147 @@ class _InlinePreview extends StatelessWidget {
             ),
           ),
           Positioned(
-            left: 16,
-            right: 16,
-            bottom: 24,
-            child: Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white,
-                      side: const BorderSide(color: Colors.white70),
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.transparent,
+                    Colors.black.withOpacity(0.7),
+                    Colors.black.withOpacity(0.9),
+                  ],
+                ),
+              ),
+              padding: const EdgeInsets.fromLTRB(20, 40, 20, 32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Texto de ayuda
+                  const Text(
+                    '¿La foto se ve bien?',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
                     ),
-                    onPressed: () => Navigator.of(context).pop(false),
-                    child: const Text('Reintentar'),
+                    textAlign: TextAlign.center,
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: () => Navigator.of(context).pop(true),
-                    child: const Text('Usar esta foto'),
+                  const SizedBox(height: 24),
+                  
+                  // Botones grandes y claros
+                  Row(
+                    children: [
+                      // Botón Reintentar
+                      Expanded(
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: () => Navigator.of(context).pop(false),
+                            borderRadius: BorderRadius.circular(16),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.15),
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(
+                                  color: Colors.white.withOpacity(0.3),
+                                  width: 2,
+                                ),
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 20,
+                                horizontal: 16,
+                              ),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.refresh_rounded,
+                                    color: Colors.white,
+                                    size: 36,
+                                    semanticLabel: 'Reintentar foto',
+                                  ),
+                                  const SizedBox(height: 8),
+                                  const Text(
+                                    'Tomar otra',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      
+                      const SizedBox(width: 16),
+                      
+                      // Botón Usar esta foto
+                      Expanded(
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: () => Navigator.of(context).pop(true),
+                            borderRadius: BorderRadius.circular(16),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                gradient: const LinearGradient(
+                                  colors: [
+                                    Color(0xFF4CAF50),
+                                    Color(0xFF388E3C),
+                                  ],
+                                ),
+                                borderRadius: BorderRadius.circular(16),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: const Color(0xFF4CAF50).withOpacity(0.4),
+                                    blurRadius: 12,
+                                    offset: const Offset(0, 4),
+                                  ),
+                                ],
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 20,
+                                horizontal: 16,
+                              ),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.check_circle_rounded,
+                                    color: Colors.white,
+                                    size: 36,
+                                    semanticLabel: 'Aceptar foto',
+                                  ),
+                                  const SizedBox(height: 8),
+                                  const Text(
+                                    'Usar esta foto',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          )
+          ),
         ],
       ),
     );

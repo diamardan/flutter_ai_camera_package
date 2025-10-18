@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/guideline_entry.dart';
+import '../widgets/lottie_animation_widget.dart';
 import 'package:go_router/go_router.dart';
 import 'dart:io';
 
@@ -20,6 +21,27 @@ class GuidelinesScreen extends ConsumerWidget {
       appBar: AppBar(title: const Text('Lineamientos')),
       body: Column(
         children: [
+          // Animación Lottie en la parte superior
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+            child: Column(
+              children: [
+                const ClearFaceLottieWidget(
+                  size: 180,
+                  repeat: true,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Lineamientos de captura',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          
+          // Lista de lineamientos
           Expanded(
             child: guidelines.isEmpty
                 ? const Center(child: Text('No hay lineamientos definidos'))
@@ -66,7 +88,9 @@ class GuidelinesScreen extends ConsumerWidget {
                 const SizedBox(width: 12),
                 Expanded(
                   child: ElevatedButton(
-                    onPressed: showCheckbox && !checked
+                    // Solo deshabilitar si se muestra el checkbox Y no está marcado
+                    // Si no se muestra checkbox, siempre habilitar
+                    onPressed: (showCheckbox && !checked)
                         ? null
                         : () async {
                             if (!context.mounted) return;

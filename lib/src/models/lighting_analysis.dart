@@ -6,6 +6,14 @@ class LightingAnalysis {
   /// Contraste de la imagen (desviación estándar del brillo)
   final double contrast;
   
+  /// Ratio de píxeles sobre-expuestos (0.0-1.0)
+  /// Valores > 0.15 indican zonas quemadas significativas
+  final double overexposedRatio;
+  
+  /// Ratio de píxeles sub-expuestos (0.0-1.0)
+  /// Valores > 0.20 indican zonas muy oscuras
+  final double underexposedRatio;
+  
   /// Estado de la iluminación
   final LightingState state;
   
@@ -21,6 +29,8 @@ class LightingAnalysis {
   const LightingAnalysis({
     required this.averageBrightness,
     required this.contrast,
+    this.overexposedRatio = 0.0,
+    this.underexposedRatio = 0.0,
     required this.state,
     this.userMessage,
     required this.isAcceptable,
@@ -30,6 +40,8 @@ class LightingAnalysis {
   @override
   String toString() {
     return 'LightingAnalysis(brightness: ${averageBrightness.toStringAsFixed(2)}, '
+        'overexp: ${(overexposedRatio * 100).toStringAsFixed(1)}%, '
+        'underexp: ${(underexposedRatio * 100).toStringAsFixed(1)}%, '
         'state: $state, acceptable: $isAcceptable, canCorrect: $canAutoCorrect)';
   }
 }
@@ -77,9 +89,9 @@ class LightingThresholds {
 
   const LightingThresholds({
     this.minOptimal = 0.35,      // Por debajo, mostrar aviso "más luz"
-    this.maxOptimal = 0.75,      // Por encima, mostrar aviso "menos luz"
+    this.maxOptimal = 0.65,      // Por encima, mostrar aviso "menos luz" (reducido de 0.75)
     this.minAcceptable = 0.20,   // Por debajo, bloquear captura
-    this.maxAcceptable = 0.90,   // Por encima, bloquear captura
+    this.maxAcceptable = 0.80,   // Por encima, bloquear captura (reducido de 0.90)
     this.minContrast = 0.10,     // Contraste mínimo aceptable
   });
 
