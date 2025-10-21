@@ -1,4 +1,4 @@
-name: datamex_camera_package_example
+name: itc_camera_package_example
 description: Example app para datamex_camera_package
 publish_to: "none"
 version: 0.0.1
@@ -9,9 +9,14 @@ dependencies:
   flutter:
     sdk: flutter
   flutter_riverpod: ^2.5.1
-  datamex_camera_package:
-    path: ..
-  permission_handler: ^11.3.0
+  itc_camera_package:
+    path: ../
+  permission_handler: ^12.0.1
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
 
 flutter:
   uses-material-design: true
+  #assets:
+   # - packages/itc_camera_package/assets/lotties/

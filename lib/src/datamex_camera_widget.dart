@@ -7,11 +7,13 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:local_rembg/local_rembg.dart';
+import 'package:image/image.dart' as img;
 import 'providers.dart';
 import 'models/guideline_entry.dart';
 import 'package:go_router/go_router.dart';
 import 'services/edge_refinement_service.dart';
 import 'services/mlkit_background_removal.dart';
+import 'services/matte_utils.dart';
 // GoRouter-only navigation is enforced; screens are resolved by routes.
 
 typedef ImageSelectedCallback = void Function(File? image);
@@ -72,15 +74,27 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
   /// Procesa la imagen removiendo el fondo si está habilitado
   /// Retorna la imagen procesada o la original si falla
   Future<File> _processImage(File file) async {
-    // ✅ Leer desde provider (configurado por la app host)
-    final removeBackground = ref.read(datamexRemoveBackgroundProvider);
+    // ⚠️ Si el widget está disposed, retornar imagen original sin procesamiento
+    if (!mounted) {
+      debugPrint('[RemoveBackground] Widget disposed, skipping processing');
+      return file;
+    }
     
-    if (!removeBackground) {
-      return file; // Sin procesamiento
+    // ✅ Leer desde provider (configurado por la app host)
+    bool removeBackground;
+    bool useMlKit;
+    
+    try {
+      removeBackground = ref.read(datamexRemoveBackgroundProvider);
+      if (!removeBackground) {
+        return file; // Sin procesamiento
+      }
+      useMlKit = ref.read(datamexUseMlKitForBackgroundProvider);
+    } catch (e) {
+      debugPrint('[RemoveBackground] Error reading providers (widget disposed?): $e');
+      return file; // Retornar original si hay error
     }
 
-    // Determinar qué método usar
-    final useMlKit = ref.read(datamexUseMlKitForBackgroundProvider);
     final methodName = useMlKit ? 'ML Kit (rápido)' : 'Local Rembg (preciso)';
     
     widget.changeStatusMessageCallback('Eliminando fondo con $methodName...');
@@ -123,8 +137,28 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
       debugPrint('[RemoveBackground] Tiempo de procesamiento: ${stopwatch.elapsedMilliseconds}ms con $methodName');
       
       if (processedBytes != null && processedBytes.isNotEmpty) {
+        // 🐛 DEBUG: Guardar imagen ORIGINAL
+        final debugDir = file.parent.path;
+        final debugTimestamp = DateTime.now().millisecondsSinceEpoch;
+        await File('$debugDir/DEBUG_1_original_$debugTimestamp.jpg').writeAsBytes(await file.readAsBytes());
+        debugPrint('[DEBUG] 1️⃣ Imagen original guardada');
+        
+        // 🐛 DEBUG: Guardar imagen SIN FONDO (PNG con transparencia)
+        await File('$debugDir/DEBUG_2_nobg_$debugTimestamp.png').writeAsBytes(processedBytes);
+        debugPrint('[DEBUG] 2️⃣ Imagen sin fondo (PNG) guardada');
+        
         // ✨ APLICAR REFINAMIENTO DE BORDES (si está habilitado)
-        final edgeBlurIntensity = ref.read(datamexEdgeBlurIntensityProvider);
+        double edgeBlurIntensity = 0.0;
+        
+        // ⚠️ Leer provider con protección
+        if (mounted) {
+          try {
+            edgeBlurIntensity = ref.read(datamexEdgeBlurIntensityProvider);
+          } catch (e) {
+            debugPrint('[RemoveBackground] Error reading edgeBlur provider: $e');
+          }
+        }
+        
         var finalImageBytes = processedBytes;
         
         if (edgeBlurIntensity > 0) {
@@ -139,21 +173,71 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
           if (refinedBytes != null) {
             finalImageBytes = refinedBytes;
             debugPrint('[RemoveBackground] ✓ Bordes refinados exitosamente');
+            
+            // 🐛 DEBUG: Guardar imagen REFINADA
+            await File('$debugDir/DEBUG_3_refined_$debugTimestamp.png').writeAsBytes(refinedBytes);
+            debugPrint('[DEBUG] 3️⃣ Imagen refinada guardada');
           } else {
             debugPrint('[RemoveBackground] ⚠ No se pudo refinar, usando imagen sin refinar');
           }
         }
         
-        // Crear nombre único para evitar conflictos
+        // Crear nombre único .jpg y aplanar transparencia sobre BLANCO
         final timestamp = DateTime.now().millisecondsSinceEpoch;
-        final suffix = useMlKit ? '_mlkit_nobg_$timestamp.png' : '_rembg_nobg_$timestamp.png';
+        final suffix = useMlKit ? '_mlkit_nobg_$timestamp.jpg' : '_rembg_nobg_$timestamp.jpg';
         final processedPath = file.path.replaceAll(
           RegExp(r'\.(jpg|jpeg|png)$', caseSensitive: false),
           suffix,
         );
+
+        // Composición robusta a color blanco + encode JPG (evita halos y premultiplied alpha)
+        Uint8List outputBytes;
+        Uint8List? redOutputBytes; // Para debug con fondo rojo
         
+        try {
+          final img.Image? decoded = img.decodeImage(finalImageBytes);
+          if (decoded != null) {
+            // 🐛 DEBUG: Guardar imagen DECODIFICADA antes del composite
+            await File('$debugDir/DEBUG_3_decoded_$debugTimestamp.png').writeAsBytes(
+              img.encodePng(decoded),
+            );
+            debugPrint('[DEBUG] 3️⃣ Imagen decodificada (pre-composite) guardada');
+            
+            // Composite con fondo BLANCO (producción)
+            outputBytes = MatteUtils.flattenToColorJpg(
+              decoded,
+              bgColor: img.ColorRgba8(255, 255, 255, 255),
+              quality: 90,
+            );
+            
+            // 🐛 DEBUG: Composite con fondo ROJO (comparación)
+            redOutputBytes = MatteUtils.flattenToColorJpg(
+              decoded,
+              bgColor: img.ColorRgba8(255, 0, 0, 255), // Rojo puro
+              quality: 90,
+            );
+            
+            // 🐛 DEBUG: Guardar versión con fondo blanco
+            await File('$debugDir/DEBUG_4_white_bg_$debugTimestamp.jpg').writeAsBytes(outputBytes);
+            debugPrint('[DEBUG] 4️⃣ Imagen con fondo BLANCO guardada');
+            
+            // 🐛 DEBUG: Guardar versión con fondo rojo
+            await File('$debugDir/DEBUG_5_red_bg_$debugTimestamp.jpg').writeAsBytes(redOutputBytes);
+            debugPrint('[DEBUG] 5️⃣ Imagen con fondo ROJO guardada (comparación)');
+          } else {
+            final original = await File(file.path).readAsBytes();
+            final img.Image? orig = img.decodeImage(original);
+            outputBytes = orig != null
+                ? MatteUtils.flattenToColorJpg(orig, bgColor: img.ColorRgba8(255, 255, 255, 255), quality: 90)
+                : finalImageBytes;
+          }
+        } catch (_) {
+          // Fallback mínimo
+          outputBytes = MatteUtils.flattenBytesToColorJpg(finalImageBytes, bgColor: img.ColorRgba8(255, 255, 255, 255), quality: 90);
+        }
+
         final processedFile = File(processedPath);
-        await processedFile.writeAsBytes(finalImageBytes);
+        await processedFile.writeAsBytes(outputBytes);
         
         // Verificar que el archivo se guardó correctamente
         if (await processedFile.exists()) {
@@ -184,7 +268,14 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
 
   Future<void> _handlePicked(XFile? image) async {
     if (image == null) {
-      ref.read(_effectiveProvider.notifier).state = null;
+      // ⚠️ Verificar mounted antes de usar ref
+      if (mounted) {
+        try {
+          ref.read(_effectiveProvider.notifier).state = null;
+        } catch (e) {
+          debugPrint('[DatamexCameraWidget] Error clearing provider (widget disposed?): $e');
+        }
+      }
       widget.loadStatusCallback(false);
       widget.onImageSelected.call(null);
       return;
@@ -198,6 +289,9 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
   }
 
   Future<void> _takePhoto(ImageSource source) async {
+    debugPrint('[DatamexCameraWidget] 📸 _takePhoto() called with source: $source');
+    debugPrint('[DatamexCameraWidget] 📸 This should open NATIVE camera picker (not overlay)');
+    
     final permission = source == ImageSource.camera
         ? Permission.camera
         : (Platform.isAndroid ? Permission.storage : Permission.photos);
@@ -217,12 +311,58 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
         preferredCameraDevice: widget.startsWithSelfieCamera ? CameraDevice.front : CameraDevice.rear,
       );
       
+      // ⚠️ CRÍTICO: Verificar mounted ANTES de procesar
+      if (!mounted) {
+        debugPrint('[DatamexCameraWidget] Widget disposed after camera, aborting');
+        return;
+      }
+      
       if (img != null) {
-        // ✅ Procesar imagen ANTES de _handlePicked
-        final file = File(img.path);
-        final processedFile = await _processImage(file);
-        ref.read(_effectiveProvider.notifier).state = processedFile;
-        await _handlePicked(XFile(processedFile.path));
+        // ✅ Mostrar diálogo de procesamiento (bloqueante) y procesar
+        if (mounted) {
+          try { ref.read(datamexProcessingProvider.notifier).state = true; } catch (_) {}
+          widget.changeStatusMessageCallback('Procesando imagen...');
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (_) => const _ProcessingDialog(),
+          );
+        }
+
+        File processedFile;
+        try {
+          final file = File(img.path);
+          processedFile = await _processImage(file);
+        } finally {
+          if (mounted) {
+            // Cerrar diálogo
+            Navigator.of(context, rootNavigator: true).pop();
+            try { ref.read(datamexProcessingProvider.notifier).state = false; } catch (_) {}
+          }
+        }
+
+        if (!mounted) {
+          debugPrint('[DatamexCameraWidget] Widget disposed after processing, aborting');
+          return;
+        }
+
+        // 👉 Navegar a preview para confirmar como en overlay
+        bool? accepted;
+        try {
+          accepted = await context.push<bool>('/datamex-photo-preview', extra: processedFile);
+        } catch (_) {
+          // Fallback sin GoRouter: usar el tile de vista previa directamente
+          accepted = true;
+        }
+
+        if (accepted == true) {
+          ref.read(_effectiveProvider.notifier).state = processedFile;
+          await _handlePicked(XFile(processedFile.path));
+        } else {
+          // Rechazado: limpiar selección
+          ref.read(_effectiveProvider.notifier).state = null;
+          widget.onImageSelected.call(null);
+        }
       } else {
         await _handlePicked(null);
       }
@@ -291,6 +431,8 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
 
   @override
   Widget build(BuildContext context) {
+    debugPrint('[DatamexCameraWidget] 🏗️ Building with showOverlay=${widget.showOverlay}, useFaceDetection=${widget.useFaceDetection}');
+    
     final imageFile = ref.watch(_effectiveProvider);
     final loading = ref.watch(datamexLoadingProvider);
     final showServerPhoto = widget.handleServerPhoto &&
@@ -311,7 +453,7 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
                         decoration: BoxDecoration(
                           border: Border.all(color: Colors.grey.shade300, width: 2),
                           borderRadius: BorderRadius.circular(12),
-                          color: Colors.grey.shade50,
+                          color: Colors.white, // Fondo blanco explícito
                         ),
                         child: Stack(
                           alignment: Alignment.center,
@@ -349,7 +491,7 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
                         decoration: BoxDecoration(
                           border: Border.all(color: Colors.grey.shade300, width: 2),
                           borderRadius: BorderRadius.circular(12),
-                          color: Colors.grey.shade50,
+                          color: Colors.white, // Fondo blanco explícito
                         ),
                         child: Center(
                           child: Padding(
@@ -386,6 +528,16 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
             children: [
               ElevatedButton.icon(
                 onPressed: loading ? null : () async {
+                  // 🔍 DEBUG: Imprimir configuración actual
+                  debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                  debugPrint('[DatamexCameraWidget] CONFIG DEBUG:');
+                  debugPrint('  showOverlay: ${widget.showOverlay}');
+                  debugPrint('  useFaceDetection: ${widget.useFaceDetection}');
+                  debugPrint('  showFaceGuides: ${widget.showFaceGuides}');
+                  debugPrint('  showGuidelinesWindow: ${widget.showGuidelinesWindow}');
+                  debugPrint('  startsWithSelfieCamera: ${widget.startsWithSelfieCamera}');
+                  debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+                  
                   // 1. Guidelines flow if enabled
                   if (widget.showGuidelinesWindow) {
                     final entries = _normalizeGuidelines(widget.guidelinesObject);
@@ -483,5 +635,43 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
       if (e is GuidelineEntry) return e;
       return GuidelineEntry(e.toString());
     }).toList(growable: false);
+  }
+}
+
+/// Diálogo modal simple para indicar procesamiento en curso en el flujo nativo
+class _ProcessingDialog extends StatelessWidget {
+  const _ProcessingDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    return WillPopScope(
+      onWillPop: () async => false,
+      child: Dialog(
+        backgroundColor: Colors.black.withOpacity(0.85),
+        insetPadding: const EdgeInsets.symmetric(horizontal: 48, vertical: 24),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: const [
+              CircularProgressIndicator(color: Colors.white, strokeWidth: 4),
+              SizedBox(height: 20),
+              Text(
+                'Procesando imagen...',
+                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 8),
+              Text(
+                'Esto puede tardar unos segundos',
+                style: TextStyle(color: Colors.white70, fontSize: 13),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

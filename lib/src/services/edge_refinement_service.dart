@@ -97,7 +97,8 @@ class EdgeRefinementService {
 
   /// Aplica la máscara difuminada al canal alpha de la imagen original
   static img.Image _applyBlurredMask(img.Image source, img.Image blurredMask) {
-    final result = img.Image(width: source.width, height: source.height);
+    // ✅ Copiar la imagen original completa primero (preserva RGB + Alpha)
+    final result = source.clone();
 
     for (var y = 0; y < source.height; y++) {
       for (var x = 0; x < source.width; x++) {
@@ -157,7 +158,8 @@ class EdgeRefinementService {
 
   /// Aplica efecto de feathering (desvanecimiento gradual)
   static img.Image _applyFeatheringEffect(img.Image source, int radius) {
-    final result = img.Image(width: source.width, height: source.height);
+    // ✅ Copiar la imagen original primero
+    final result = source.clone();
 
     for (var y = 0; y < source.height; y++) {
       for (var x = 0; x < source.width; x++) {
@@ -270,7 +272,8 @@ class EdgeRefinementService {
 
   /// Suaviza solo los píxeles semi-transparentes (bordes)
   static img.Image _smoothSemiTransparentPixels(img.Image source) {
-    final result = img.Image(width: source.width, height: source.height);
+    // ✅ Copiar la imagen original primero
+    final result = source.clone();
 
     for (var y = 0; y < source.height; y++) {
       for (var x = 0; x < source.width; x++) {

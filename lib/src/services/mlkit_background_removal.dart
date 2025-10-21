@@ -214,16 +214,28 @@ class MlKitBackgroundRemoval {
 
   /// Aplica la máscara a la imagen
   static img.Image _applyMask(img.Image image, img.Image mask) {
-    final result = img.Image(width: image.width, height: image.height);
+    // ✅ Copiar imagen original primero (preserva colores)
+    final result = image.clone();
 
     for (int y = 0; y < image.height; y++) {
       for (int x = 0; x < image.width; x++) {
-        final pixel = image.getPixel(x, y);
         final maskPixel = mask.getPixel(x, y);
         final alpha = maskPixel.a.toInt();
 
-        if (alpha > 0) {
-          // Mantener píxel con alpha de la máscara
+        if (alpha == 0) {
+          // Transparente - solo cambiar el alpha del píxel
+          final pixel = result.getPixel(x, y);
+          result.setPixelRgba(
+            x,
+            y,
+            pixel.r.toInt(),
+            pixel.g.toInt(),
+            pixel.b.toInt(),
+            0, // Transparente
+          );
+        } else if (alpha < 255) {
+          // Semi-transparente - aplicar alpha de la máscara
+          final pixel = result.getPixel(x, y);
           result.setPixelRgba(
             x,
             y,
@@ -232,10 +244,8 @@ class MlKitBackgroundRemoval {
             pixel.b.toInt(),
             alpha,
           );
-        } else {
-          // Transparente
-          result.setPixelRgba(x, y, 0, 0, 0, 0);
         }
+        // Si alpha == 255, dejar el píxel como está (ya copiado)
       }
     }
 

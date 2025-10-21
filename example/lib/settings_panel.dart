@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:datamex_camera_package/datamex_camera_package.dart';
+import 'package:itc_camera_package/datamex_camera_package.dart';
 
 /// ========================================
 /// PROVIDERS DE CONFIGURACIÓN LOCAL (solo para el ejemplo)

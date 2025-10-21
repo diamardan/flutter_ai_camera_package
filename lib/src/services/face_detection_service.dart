@@ -5,10 +5,15 @@ import '../ios_config/ios_image_processor.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:camera/camera.dart';
 import '../models/face_detection_result.dart';
+import '../utils/debug_logger.dart';
 
 class FaceDetectionService {
   late FaceDetector _faceDetector;
   bool _isProcessing = false;
+  int _frameCount = 0;
+  int _successCount = 0;
+  int _failureCount = 0;
+  final _logger = DebugLogger();
 
   FaceDetectionService() {
     _faceDetector = FaceDetector(
@@ -17,10 +22,11 @@ class FaceDetectionService {
         enableContours: true,
         enableClassification: true,
         enableTracking: true,
-        minFaceSize: 0.15,
+        minFaceSize: 0.10, // ✅ Reducido de 0.15 a 0.10 para detectar caras más pequeñas
         performanceMode: FaceDetectorMode.accurate,
       ),
     );
+    _logger.log('🔍 FaceDetector inicializado (modo: accurate, minSize: 0.10)', tag: 'FaceDetection');
   }
 
   Future<FaceDetectionResult?> detectFace(CameraImage image, InputImageRotation rotation, Size screenSize) async {
@@ -30,23 +36,54 @@ class FaceDetectionService {
     }
 
     _isProcessing = true;
+    _frameCount++;
 
     try {
+      // Log cada 30 frames para no saturar
+      if (_frameCount % 30 == 1) {
+        await _logger.log(
+          'Frame #$_frameCount | Éxitos: $_successCount | Fallos: $_failureCount | '
+          'Formato: ${image.format.group} | Tamaño: ${image.width}x${image.height} | '
+          'Planos: ${image.planes.length}',
+          tag: 'FaceDetection',
+        );
+      }
+
       InputImage? inputImage;
       // If running on iOS, attempt the safer BGRA path first to avoid nil CVPixelBuffer issues
       if (PlatformHandler.isIOS) {
         inputImage = IOSImageProcessor.tryCreateFromBGRA(image, rotation);
+        if (inputImage != null && _frameCount % 30 == 1) {
+          await _logger.log('✅ InputImage creado via BGRA (iOS)', tag: 'FaceDetection');
+        }
       }
-      inputImage ??= _inputImageFromCameraImage(image, rotation);
+      
       if (inputImage == null) {
+        inputImage = _inputImageFromCameraImage(image, rotation);
+        if (_frameCount % 30 == 1) {
+          await _logger.log(
+            '✅ InputImage creado via ${PlatformHandler.isIOS ? "fallback" : "YUV420"} '
+            '(Android/fallback)',
+            tag: 'FaceDetection',
+          );
+        }
+      }
+      
+      if (inputImage == null) {
+        _failureCount++;
+        await _logger.log('❌ No se pudo crear InputImage del frame', tag: 'FaceDetection');
         _isProcessing = false;
         return null;
       }
 
-  final faces = await _faceDetector.processImage(inputImage);
+      final faces = await _faceDetector.processImage(inputImage);
       _isProcessing = false;
 
       if (faces.isEmpty) {
+        _failureCount++;
+        if (_frameCount % 30 == 1) {
+          await _logger.log('⚠️ No se detectaron rostros en este frame', tag: 'FaceDetection');
+        }
         return const FaceDetectionResult(
           faceDetected: false,
           faceCentered: false,
@@ -56,7 +93,18 @@ class FaceDetectionService {
         );
       }
 
+      _successCount++;
+      if (_frameCount % 30 == 1 || _successCount == 1) {
+        await _logger.log(
+          '✅ Rostro detectado! Cantidad: ${faces.length} | '
+          'BBox: ${faces.first.boundingBox} | '
+          'Tracking ID: ${faces.first.trackingId}',
+          tag: 'FaceDetection',
+        );
+      }
+
       if (faces.length > 1) {
+        await _logger.log('⚠️ Múltiples rostros detectados: ${faces.length}', tag: 'FaceDetection');
         return const FaceDetectionResult(
           faceDetected: true,
           faceCentered: false,

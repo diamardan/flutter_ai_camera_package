@@ -44,7 +44,7 @@ class LottieAnimationWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Lottie.asset(
-      'packages/datamex_camera_package/assets/lotties/$animationName.json',
+      'packages/itc_camera_package/assets/lotties/$animationName.json',
       width: width,
       height: height,
       fit: fit ?? BoxFit.contain,

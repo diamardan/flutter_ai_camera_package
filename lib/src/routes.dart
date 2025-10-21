@@ -5,9 +5,10 @@ import 'dart:io';
 import 'ui/preview_screen.dart';
 import 'ui/guidelines_screen.dart';
 import 'models/guideline_entry.dart';
+import 'models/camera_config.dart'; // ✅ Importar configuración
 
 /// Helper to create a GoRoute for the camera overlay.
-/// Usage: final file = await context.push<File?>('/datamex-camera-overlay');
+/// Usage: final file = await context.push<File?>('/datamex-camera-overlay', extra: {'config': cameraConfig});
 GoRoute datamexOverlayRoute({
   required String path,
   required String name,
@@ -22,11 +23,13 @@ GoRoute datamexOverlayRoute({
       bool useFD = useFaceDetection || qp['useFaceDetection'] == 'true';
       bool startsSelfie = false;
       bool showFaceGuides = true;
+      CameraConfig config = const CameraConfig();
       // ❌ removeBackground se lee del PROVIDER, no del extra
       if (extra is Map) {
         if (extra['useFaceDetection'] is bool) useFD = extra['useFaceDetection'] as bool;
         if (extra['startsWithSelfie'] is bool) startsSelfie = extra['startsWithSelfie'] as bool;
         if (extra['showFaceGuides'] is bool) showFaceGuides = extra['showFaceGuides'] as bool;
+        if (extra['config'] is CameraConfig) config = extra['config'] as CameraConfig;
       }
       return MaterialPage<File?>(
         key: state.pageKey,
@@ -34,6 +37,7 @@ GoRoute datamexOverlayRoute({
           useFaceDetection: useFD,
           startsWithSelfie: startsSelfie,
           showFaceGuides: showFaceGuides,
+          config: config,
           // removeBackground se lee internamente del provider
         ),
       );
@@ -73,7 +77,7 @@ GoRoute datamexGuidelinesRoute({
 }
 
 /// Helper to create a GoRoute for the preview screen.
-/// Usage: final accepted = await context.push<bool>('/datamex-photo-preview', extra: file);
+/// Usage: final accepted = await context.push<bool>('/datamex-photo-preview', extra: {'file': file, 'config': config});
 GoRoute datamexPreviewRoute({
   required String path,
   required String name,
@@ -83,17 +87,19 @@ GoRoute datamexPreviewRoute({
     name: name,
     pageBuilder: (context, state) {
       File? file;
+      CameraConfig config = const CameraConfig();
       final extra = state.extra;
       if (extra is File) {
         file = extra;
-      } else if (extra is Map && extra['file'] is File) {
-        file = extra['file'] as File;
+      } else if (extra is Map) {
+        if (extra['file'] is File) file = extra['file'] as File;
+        if (extra['config'] is CameraConfig) config = extra['config'] as CameraConfig;
       }
       return MaterialPage<bool>(
         key: state.pageKey,
         child: file == null
             ? const Scaffold(body: Center(child: Text('No file to preview')))
-            : DatamexPhotoPreviewScreen(file: file),
+            : DatamexPhotoPreviewScreen(file: file, config: config),
       );
     },
   );

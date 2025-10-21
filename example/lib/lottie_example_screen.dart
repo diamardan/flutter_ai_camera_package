@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:datamex_camera_package/datamex_camera_package.dart';
+import 'package:itc_camera_package/datamex_camera_package.dart';
 
 /// Pantalla de ejemplo que muestra cómo usar las animaciones Lottie
 class LottieExampleScreen extends StatelessWidget {

@@ -8,6 +8,8 @@ import 'package:image/image.dart' as img;
 import 'package:flutter/foundation.dart' show compute;
 import 'dart:math' as math;
 import 'package:camera/camera.dart';
+import '../utils/debug_logger.dart';
+import '../ui/debug_log_overlay.dart';
 import 'package:local_rembg/local_rembg.dart';
 import '../core/platform_handler.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
@@ -16,6 +18,8 @@ import '../services/lighting_validator.dart';
 import '../models/lighting_analysis.dart';
 import '../crop/simple_cropper.dart';
 import '../services/edge_refinement_service.dart';
+import '../services/matte_utils.dart';
+import '../models/camera_config.dart'; // ✅ Importar configuración
 
 /// 🎯 Enum para el sistema de pasos progresivos de captura
 enum CaptureStep {
@@ -32,6 +36,7 @@ class FaceDetectionCameraSimple extends StatefulWidget {
   final bool showFaceGuides;
   final bool removeBackground; // ✅ Nuevo parámetro
   final Function(String)? onStatusMessage; // ✅ Callback para mensajes
+  final CameraConfig config; // ✅ Configuración de textos y colores
   // Validation thresholds
   final double yawMaxDegrees;   // left/right turn tolerance
   final double pitchMaxDegrees; // up/down tilt tolerance
@@ -49,6 +54,7 @@ class FaceDetectionCameraSimple extends StatefulWidget {
     this.showFaceGuides = true,
     this.removeBackground = true, // ✅ Default true
     this.onStatusMessage,
+    this.config = const CameraConfig(), // ✅ Default con textos en español
     this.yawMaxDegrees = 10.0,
     this.pitchMaxDegrees = 10.0,
     this.rollMaxDegrees = 8.0,
@@ -77,6 +83,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
   LightingAnalysis? _currentLightingAnalysis;
   bool _hideCameraPreview = false; // para evitar errores de textura durante transición
   bool _isProcessing = false; // Flag para mantener animación durante procesamiento post-captura
+  bool _showCaptureFlash = false; // ⚡ Flash visual cuando se toma la foto
   
   // 🎯 SISTEMA DE PASOS PROGRESIVOS
   CaptureStep _currentStep = CaptureStep.step2FaceCentering; // ✅ Iniciar directo en paso 2
@@ -111,13 +118,29 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
 
   Future<void> _init() async {
     try {
+      // 📱 Log información de plataforma
+      await dlog('📱 Plataforma: ${Platform.operatingSystem}', tag: 'Camera');
+      await dlog('📱 Versión: ${Platform.operatingSystemVersion}', tag: 'Camera');
+      
       final cameras = await availableCameras();
-      if (cameras.isEmpty) { _showError('No hay cámaras disponibles'); return; }
+      await dlog('[Camera] Cámaras disponibles: ${cameras.length}', tag: 'Camera');
+      for (var i = 0; i < cameras.length; i++) {
+        final cam = cameras[i];
+        await dlog('[Camera] [$i] ${cam.name} | ${cam.lensDirection} | Sensor: ${cam.sensorOrientation}°', tag: 'Camera');
+      }
+      
+      if (cameras.isEmpty) { 
+        await dlog('❌ No hay cámaras disponibles', tag: 'Camera');
+        _showError(widget.config.texts.noCameraAvailable); 
+        return; 
+      }
+      
       // Seleccionar cámara según preferencia
       final desired = widget.useFrontCamera ? CameraLensDirection.front : CameraLensDirection.back;
       CameraDescription camera;
       try {
         camera = cameras.firstWhere((c) => c.lensDirection == desired);
+        await dlog('[Camera] ✅ Cámara seleccionada: ${camera.name} (${camera.lensDirection})', tag: 'Camera');
       } catch (_) {
         // fallback: si no aparece marcada como front/back, intenta heurística por nombre
         if (widget.useFrontCamera) {
@@ -126,28 +149,80 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
             orElse: () => cameras.first,
           );
           camera = byName;
+          await dlog('[Camera] ⚠️ Cámara seleccionada por heurística: ${camera.name}', tag: 'Camera');
         } else {
           camera = cameras.first;
+          await dlog('[Camera] ⚠️ Cámara seleccionada (primera disponible): ${camera.name}', tag: 'Camera');
         }
       }
-      // Use a moderate resolution and explicit YUV format to avoid ImageReader pressure on capture
+      
+      // Use a higher resolution for better face detection
+      // Medium puede resultar en resoluciones muy bajas en algunos Samsung (720x480)
+      // High asegura al menos 1280x720 que es suficiente para ML Kit
+      await dlog('[Camera] Inicializando con ResolutionPreset.high', tag: 'Camera');
+      await dlog('[Camera] Formato: ${PlatformHandler.isIOS ? "BGRA8888" : "YUV420"}', tag: 'Camera');
+      
       _controller = CameraController(
         camera,
-        ResolutionPreset.medium,
+        ResolutionPreset.high, // ✅ Cambiado de medium a high para mejor detección
         enableAudio: false,
         imageFormatGroup: PlatformHandler.isIOS ? ImageFormatGroup.bgra8888 : ImageFormatGroup.yuv420,
       );
+      
       await _controller!.initialize();
+      final previewSize = _controller!.value.previewSize!;
+      await dlog('[Camera] ✅ Controller inicializado | Resolución: $previewSize', tag: 'Camera');
+      
+      // 🔍 VALIDACIÓN AUTOMÁTICA: Si la resolución es muy baja, intentar con veryHigh
+      final maxDimension = previewSize.width > previewSize.height ? previewSize.width : previewSize.height;
+      
+      if (maxDimension < 1000) {
+        await dlog('[Camera] ⚠️ Resolución muy baja detectada (${maxDimension}p), intentando con veryHigh...', tag: 'Camera');
+        try {
+          await _controller?.dispose();
+          _controller = CameraController(
+            camera,
+            ResolutionPreset.veryHigh,
+            enableAudio: false,
+            imageFormatGroup: PlatformHandler.isIOS ? ImageFormatGroup.bgra8888 : ImageFormatGroup.yuv420,
+          );
+          await _controller!.initialize();
+          final newSize = _controller!.value.previewSize!;
+          await dlog('[Camera] ✅ Resolución mejorada a: $newSize', tag: 'Camera');
+        } catch (e) {
+          await dlog('[Camera] ⚠️ veryHigh no soportado, continuando con: $previewSize', tag: 'Camera');
+          // Si veryHigh falla, volver a crear con high
+          _controller = CameraController(
+            camera,
+            ResolutionPreset.high,
+            enableAudio: false,
+            imageFormatGroup: PlatformHandler.isIOS ? ImageFormatGroup.bgra8888 : ImageFormatGroup.yuv420,
+          );
+          await _controller!.initialize();
+        }
+      } else {
+        await dlog('[Camera] ✅ Resolución adecuada para detección facial', tag: 'Camera');
+      }
+      
   // Bloquear a portrait para evitar cambios de orientación durante la captura
-  try { await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp); } catch (_) {}
+  try { 
+    await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
+    await dlog('[Camera] ✅ Orientación bloqueada a portrait', tag: 'Camera');
+  } catch (e) {
+    await dlog('[Camera] ⚠️ No se pudo bloquear orientación: $e', tag: 'Camera');
+  }
+  
       _faceDetectionService = FaceDetectionService();
       _lightingValidator = const LightingValidator(thresholds: LightingThresholds.defaults);
       if (!mounted) { try { await _controller?.dispose(); } catch (_) {} return; }
       setState(() => _initialized = true);
+      
+      await dlog('[Camera] 🎥 Iniciando stream de imágenes', tag: 'Camera');
       await _controller!.startImageStream(_processCameraImage);
     } catch (e) {
       debugPrint('Camera init error: $e');
-      _showError('Error al inicializar la cámara');
+      await dlog('❌ Error inicializando cámara: $e', tag: 'Camera');
+      _showError(widget.config.texts.errorInitializingCamera);
     }
   }
 
@@ -202,10 +277,10 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         _faceRectNorm = null;
         _normLandmarks = null;
         _normContours = null;
-        if (mounted && _statusMessage != '❌ No se detecta rostro') {
+        if (mounted && _statusMessage != widget.config.texts.noFaceDetected) {
           setState(() {
             _insideOval = false;
-            _statusMessage = '❌ No se detecta rostro';
+            _statusMessage = widget.config.texts.noFaceDetected;
           });
         }
         return;
@@ -307,15 +382,15 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
           progressPercentage = (_stepValidFrames / currentRequired * 100).clamp(0.0, 100.0);
           
           if (!res.faceDetected) {
-            nextMsg = '❌ No se detecta rostro';
+            nextMsg = widget.config.texts.noFaceDetected;
           } else if (!inside) {
-            nextMsg = '🎯 Coloca tu rostro en el óvalo y permanece quieto';
+            nextMsg = widget.config.texts.placeYourFace;
           } else if (!distanceOk) {
-            nextMsg = fh < widget.minFaceHeight ? '📏 Acércate un poco' : '📏 Aléjate un poco';
+            nextMsg = fh < widget.minFaceHeight ? widget.config.texts.moveCloser : widget.config.texts.moveAway;
           } else if (!orientationOk) {
-            nextMsg = '👀 Mira al frente';
+            nextMsg = widget.config.texts.lookForward;
           } else {
-            nextMsg = '✅ Preparando... ${progressPercentage.toStringAsFixed(0)}%';
+            nextMsg = '${widget.config.texts.preparing} ${progressPercentage.toStringAsFixed(0)}%';
           }
           break;
 
@@ -327,17 +402,17 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
           progressPercentage = (_stepValidFrames / currentRequired * 100).clamp(0.0, 100.0);
           
           if (!res.faceDetected) {
-            nextMsg = '❌ No se detecta rostro';
+            nextMsg = widget.config.texts.noFaceDetected;
           } else if (!inside) {
-            nextMsg = '🎯 Mantén tu rostro centrado';
+            nextMsg = widget.config.texts.centerYourFace;
           } else if (!orientationOk) {
-            nextMsg = '👀 Mira al frente';
+            nextMsg = widget.config.texts.lookForward;
           } else if (!distanceOk) {
-            nextMsg = fh < widget.minFaceHeight ? '📏 Acércate un poco' : '📏 Aléjate un poco';
+            nextMsg = fh < widget.minFaceHeight ? widget.config.texts.moveCloser : widget.config.texts.moveAway;
           } else if (!lightingOk && lightingMessage != null) {
             nextMsg = '💡 $lightingMessage';
           } else {
-            nextMsg = '📸 Capturando... ${progressPercentage.toStringAsFixed(0)}%';
+            nextMsg = '${widget.config.texts.capturing} ${progressPercentage.toStringAsFixed(0)}%';
           }
           break;
       }
@@ -370,7 +445,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
                 setState(() {
                   _currentStep = CaptureStep.step2FaceCentering;
                   _stepValidFrames = 0;
-                  _statusMessage = '🎯 Ahora centra toda tu cabeza';
+                  _statusMessage = widget.config.texts.centerYourHead;
                 });
               }
               break;
@@ -381,7 +456,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
                 setState(() {
                   _currentStep = CaptureStep.step3FinalCapture;
                   _stepValidFrames = 0;
-                  _statusMessage = '📸 Preparando captura final...';
+                  _statusMessage = widget.config.texts.preparingFinalCapture;
                 });
               }
               break;
@@ -436,51 +511,13 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
     setState(() {
       _isCapturing = true;
       _isProcessing = true;
-      _statusMessage = '⏳ Capturando imagen...';
+      _statusMessage = widget.config.texts.capturing;
     });
-    
-    // 🎨 Mostrar dialog de procesamiento INMEDIATAMENTE
-    if (mounted) {
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        barrierColor: Colors.black87,
-        builder: (dialogContext) => PopScope(
-          canPop: false,
-          child: Material(
-            color: Colors.transparent,
-            child: Center(
-              child: Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: const Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    CircularProgressIndicator(strokeWidth: 3),
-                    SizedBox(height: 20),
-                    Text(
-                      'Procesando imagen...',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.black87,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
     
     try {
       debugPrint('[Capture] Starting capture sequence');
-      // Stop stream if active to allow still capture
+      
+      // ⚡ PASO 1: Detener stream RÁPIDO (sin delays innecesarios)
       if (_controller!.value.isStreamingImages) {
         debugPrint('[Capture] Stopping image stream...');
         await _controller!.stopImageStream().timeout(
@@ -490,45 +527,97 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
           },
         );
         debugPrint('[Capture] Image stream stopped');
-        // tiny delay to let pipeline drain
-        await Future.delayed(const Duration(milliseconds: 320));
       }
 
-      // Pause preview to reduce BufferQueue pressure on some devices
-      debugPrint('[Capture] Pausing preview...');
-  try { 
-    await _controller!.pausePreview().timeout(
-      const Duration(seconds: 2),
-      onTimeout: () {
-        debugPrint('[Capture] ⚠️ pausePreview timeout');
-      },
-    );
-    debugPrint('[Capture] Preview paused');
-  } catch (e) { 
-    debugPrint('[Capture] pausePreview error: $e'); 
-  }
-  // Pequeña espera tras pausar preview para asegurar drenado
-  await Future.delayed(const Duration(milliseconds: 80));
+      // ⚡ PASO 2: Pequeño delay para que el pipeline se vacíe (mínimo necesario)
+      debugPrint('[Capture] Pipeline drain delay...');
+      await Future.delayed(const Duration(milliseconds: 100));
       try { await _controller!.setFlashMode(FlashMode.off); } catch (_) {}
 
-      // Attempt capture with small retries (handles transient ImageReader issues)
+      // ⚡ PASO 3: TOMAR LA FOTO INMEDIATAMENTE (ANTES del dialog)
+      debugPrint('[Capture] 📸 Taking picture NOW...');
       XFile pic;
-      int attempts = 0;
-      while (true) {
-        attempts++;
-        try {
-          // Guard: ensure not already taking a picture
-          if (_controller!.value.isTakingPicture) {
-            await Future.delayed(const Duration(milliseconds: 60));
-          }
-          pic = await _controller!.takePicture();
-          break;
-        } catch (e) {
-          debugPrint('[Capture] takePicture attempt $attempts failed: $e');
-          if (attempts >= 3) rethrow;
-          await Future.delayed(Duration(milliseconds: 150 * attempts));
+      try {
+        pic = await _controller!.takePicture().timeout(
+          const Duration(seconds: 8),
+          onTimeout: () {
+            throw TimeoutException('takePicture timeout after 8s');
+          },
+        );
+        debugPrint('[Capture] ✅ takePicture SUCCESS - Photo captured!');
+        
+        // ⚡ FEEDBACK VISUAL INSTANTÁNEO: Flash blanco
+        if (mounted) {
+          setState(() => _showCaptureFlash = true);
+          // Vibración háptica (si está disponible)
+          try {
+            HapticFeedback.mediumImpact();
+          } catch (_) {}
+          // Ocultar flash después de 150ms
+          Future.delayed(const Duration(milliseconds: 150), () {
+            if (mounted) setState(() => _showCaptureFlash = false);
+          });
         }
+      } catch (e) {
+        debugPrint('[Capture] ❌ takePicture FAILED: $e');
+        // Show error WITHOUT dialog (since we haven't shown it yet)
+        if (mounted) {
+          _showError(widget.config.texts.errorCapturingImage);
+          setState(() {
+            _isCapturing = false;
+            _isProcessing = false;
+          });
+        }
+        // Try to recover: resume stream so user can retry
+        try {
+          await _controller!.resumePreview();
+          if (!_controller!.value.isStreamingImages) {
+            await _controller!.startImageStream(_processCameraImage);
+          }
+        } catch (_) {}
+        return; // Exit without rethrowing
       }
+      
+      // ✅ PASO 4: AHORA SÍ mostrar dialog "Procesando imagen..." para crop/background removal
+      if (mounted) {
+        debugPrint('[Capture] 🎨 Showing processing dialog...');
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          barrierColor: Colors.black87,
+          builder: (dialogContext) => PopScope(
+            canPop: false,
+            child: Material(
+              color: Colors.transparent,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const CircularProgressIndicator(strokeWidth: 3),
+                      const SizedBox(height: 20),
+                      Text(
+                        widget.config.texts.processingImage,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      }
+      
       if (!mounted) return;
       // Espejar horizontalmente la imagen para selfies (modo espejo)
       File file = File(pic.path);
@@ -602,6 +691,12 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       if (widget.removeBackground) {
         debugPrint('[Capture] Starting background removal process...');
         
+        // 🐛 DEBUG: Guardar imagen ORIGINAL (capturada)
+        final debugDir = file.parent.path;
+        final debugTimestamp = DateTime.now().millisecondsSinceEpoch;
+        await File('$debugDir/DEBUG_1_original_$debugTimestamp.jpg').writeAsBytes(await file.readAsBytes());
+        debugPrint('[DEBUG] 1️⃣ Imagen original guardada');
+        
         try {
           // Usar Local Rembg (podría parametrizarse luego)
           final stopwatch = Stopwatch()..start();
@@ -620,35 +715,80 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
           debugPrint('[Capture] Background removal completed in ${stopwatch.elapsedMilliseconds}ms');
           
           if (result.imageBytes != null && result.imageBytes!.isNotEmpty) {
+            // 🐛 DEBUG: Guardar imagen SIN FONDO (PNG con transparencia)
+            await File('$debugDir/DEBUG_2_nobg_$debugTimestamp.png').writeAsBytes(result.imageBytes!);
+            debugPrint('[DEBUG] 2️⃣ Imagen sin fondo (PNG) guardada');
+            
             // Aplicar edge refinement si está disponible
-            Uint8List finalBytes = Uint8List.fromList(result.imageBytes!);
+            Uint8List pngWithAlpha = Uint8List.fromList(result.imageBytes!);
             
             try {
               final refined = await EdgeRefinementService.refineEdges(
-                imageBytes: finalBytes,
-                intensity: 3, // Intensidad por defecto
+                imageBytes: pngWithAlpha,
+                intensity: 3,
               );
               if (refined != null) {
-                finalBytes = refined;
+                pngWithAlpha = refined;
                 debugPrint('[Capture] Edge refinement applied');
+                
+                // 🐛 DEBUG: Guardar imagen REFINADA
+                await File('$debugDir/DEBUG_3_refined_$debugTimestamp.png').writeAsBytes(refined);
+                debugPrint('[DEBUG] 3️⃣ Imagen refinada guardada');
               }
             } catch (e) {
               debugPrint('[Capture] Edge refinement failed, using unrefined: $e');
             }
             
-            // Guardar imagen procesada
+            // ✅ CONVERSIÓN DIRECTA PNG → JPG con fondo BLANCO
+            debugPrint('[Capture] 🎨 Convirtiendo PNG (${pngWithAlpha.length} bytes) a JPG con fondo blanco...');
+            
+            // 🐛 DEBUG: Decodificar y guardar antes del composite
+            final img.Image? decoded = img.decodeImage(pngWithAlpha);
+            if (decoded != null) {
+              await File('$debugDir/DEBUG_4_decoded_$debugTimestamp.png').writeAsBytes(
+                img.encodePng(decoded),
+              );
+              debugPrint('[DEBUG] 4️⃣ Imagen decodificada (pre-composite) guardada');
+            }
+            
+            final Uint8List jpgBytes = MatteUtils.flattenBytesToColorJpg(
+              pngWithAlpha,
+              bgColor: img.ColorRgba8(255, 255, 255, 255),
+              quality: 90,
+            );
+            
+            debugPrint('[Capture] ✅ JPG generado: ${jpgBytes.length} bytes');
+            
+            // 🐛 DEBUG: Guardar JPG con fondo BLANCO
+            await File('$debugDir/DEBUG_5_white_bg_$debugTimestamp.jpg').writeAsBytes(jpgBytes);
+            debugPrint('[DEBUG] 5️⃣ Imagen con fondo BLANCO guardada');
+            
+            // 🐛 DEBUG: Generar y guardar versión con fondo ROJO (comparación)
+            if (decoded != null) {
+              final Uint8List redJpgBytes = MatteUtils.flattenToColorJpg(
+                decoded,
+                bgColor: img.ColorRgba8(255, 0, 0, 255), // Rojo puro
+                quality: 90,
+              );
+              await File('$debugDir/DEBUG_6_red_bg_$debugTimestamp.jpg').writeAsBytes(redJpgBytes);
+              debugPrint('[DEBUG] 6️⃣ Imagen con fondo ROJO guardada (comparación)');
+            }
+            
+            // Guardar JPG final
             final timestamp = DateTime.now().millisecondsSinceEpoch;
             final processedPath = file.path.replaceAll(
               RegExp(r'\.(jpg|jpeg|png)$', caseSensitive: false),
-              '_processed_$timestamp.png',
+              '_processed_$timestamp.jpg',
             );
             
             final processedFile = File(processedPath);
-            await processedFile.writeAsBytes(finalBytes);
+            await processedFile.writeAsBytes(jpgBytes);
             
             if (await processedFile.exists()) {
-              file = processedFile; // ← Usar imagen procesada
-              debugPrint('[Capture] Processed image saved: $processedPath');
+              file = processedFile;
+              debugPrint('[Capture] ✅ Processed JPG saved: $processedPath');
+            } else {
+              debugPrint('[Capture] ❌ Failed to save processed file');
             }
           }
         } on TimeoutException catch (e) {
@@ -668,7 +808,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       if (mounted) {
         Navigator.of(context, rootNavigator: true).pop(); // Cerrar dialog
         setState(() {
-          _statusMessage = '✅ Imagen procesada';
+          _statusMessage = widget.config.texts.imageProcessed;
           _isProcessing = false;
         });
       }
@@ -862,6 +1002,58 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
                       offset: Offset(0, 1),
                     ),
                   ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        
+        // ⚡ FLASH BLANCO al capturar (feedback visual instantáneo)
+        if (_showCaptureFlash)
+          Positioned.fill(
+            child: Container(
+              color: Colors.white,
+              child: const Center(
+                child: Icon(
+                  Icons.camera_alt,
+                  size: 80,
+                  color: Colors.black26,
+                ),
+              ),
+            ),
+          ),
+        // 🐛 BOTÓN FLOTANTE DE DEBUG (esquina superior derecha)
+        Positioned(
+          top: 60,
+          right: 16,
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const DebugLogOverlay(),
+                    fullscreenDialog: true,
+                  ),
+                );
+              },
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.red.withValues(alpha: 0.8),
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.3),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.bug_report,
+                  color: Colors.white,
+                  size: 24,
                 ),
               ),
             ),

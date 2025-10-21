@@ -3,11 +3,17 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers.dart';
+import '../models/camera_config.dart';
 
 class DatamexPhotoPreviewScreen extends ConsumerStatefulWidget {
   final File file;
+  final CameraConfig config;
 
-  const DatamexPhotoPreviewScreen({super.key, required this.file});
+  const DatamexPhotoPreviewScreen({
+    super.key,
+    required this.file,
+    this.config = const CameraConfig(),
+  });
 
   @override
   ConsumerState<DatamexPhotoPreviewScreen> createState() => _DatamexPhotoPreviewScreenState();
@@ -69,11 +75,11 @@ class _DatamexPhotoPreviewScreenState extends ConsumerState<DatamexPhotoPreviewS
     print('[Preview] isProcessing: $isProcessing');
     
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: Colors.white,
       appBar: AppBar(
-        title: const Text(
-          'Previsualización',
-          style: TextStyle(
+        title: Text(
+          widget.config.texts.preview,
+          style: const TextStyle(
             fontSize: 20,
             fontWeight: FontWeight.w600,
           ),
@@ -103,7 +109,7 @@ class _DatamexPhotoPreviewScreenState extends ConsumerState<DatamexPhotoPreviewS
                         ),
                         const SizedBox(height: 16),
                         Text(
-                          statusMessage.isNotEmpty ? statusMessage : 'Procesando imagen...',
+                          statusMessage.isNotEmpty ? statusMessage : widget.config.texts.processingImage,
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 18,
@@ -112,9 +118,9 @@ class _DatamexPhotoPreviewScreenState extends ConsumerState<DatamexPhotoPreviewS
                           textAlign: TextAlign.center,
                         ),
                         const SizedBox(height: 8),
-                        const Text(
-                          'Esto puede tardar unos segundos',
-                          style: TextStyle(
+                        Text(
+                          widget.config.texts.thisMayTakeSeconds,
+                          style: const TextStyle(
                             color: Colors.white70,
                             fontSize: 14,
                           ),
@@ -141,7 +147,7 @@ class _DatamexPhotoPreviewScreenState extends ConsumerState<DatamexPhotoPreviewS
                             ),
                             const SizedBox(height: 16),
                             Text(
-                              'Error al cargar la imagen',
+                              widget.config.texts.errorLoadingImage,
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 18,
@@ -161,14 +167,18 @@ class _DatamexPhotoPreviewScreenState extends ConsumerState<DatamexPhotoPreviewS
                         ),
                       )
                     : _imageBytes != null
-                        ? Image.memory(
-                            _imageBytes!,
-                            fit: BoxFit.contain,
+                        ? Container(
+                            color: Colors.white, // Fondo blanco explícito para la imagen
+                            alignment: Alignment.center,
+                            child: Image.memory(
+                              _imageBytes!,
+                              fit: BoxFit.contain,
+                            ),
                           )
-                        : const Center(
+                        : Center(
                             child: Text(
-                              'No hay imagen',
-                              style: TextStyle(
+                              widget.config.texts.noImage,
+                              style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 18,
                               ),
@@ -198,9 +208,9 @@ class _DatamexPhotoPreviewScreenState extends ConsumerState<DatamexPhotoPreviewS
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   // Texto de ayuda
-                  const Text(
-                    '¿La foto se ve bien?',
-                    style: TextStyle(
+                  Text(
+                    widget.config.texts.photoLooksGood,
+                    style: const TextStyle(
                       color: Colors.white,
                       fontSize: 18,
                       fontWeight: FontWeight.w600,
@@ -241,12 +251,12 @@ class _DatamexPhotoPreviewScreenState extends ConsumerState<DatamexPhotoPreviewS
                                     Icons.refresh_rounded,
                                     color: Colors.white,
                                     size: 36,
-                                    semanticLabel: 'Reintentar foto',
+                                    semanticLabel: widget.config.texts.retryPhoto,
                                   ),
                                   const SizedBox(height: 8),
-                                  const Text(
-                                    'Tomar otra',
-                                    style: TextStyle(
+                                  Text(
+                                    widget.config.texts.takeAnother,
+                                    style: const TextStyle(
                                       color: Colors.white,
                                       fontSize: 16,
                                       fontWeight: FontWeight.w600,
@@ -299,12 +309,12 @@ class _DatamexPhotoPreviewScreenState extends ConsumerState<DatamexPhotoPreviewS
                                     Icons.check_circle_rounded,
                                     color: Colors.white,
                                     size: 36,
-                                    semanticLabel: 'Aceptar foto',
+                                    semanticLabel: widget.config.texts.acceptPhoto,
                                   ),
                                   const SizedBox(height: 8),
-                                  const Text(
-                                    'Usar esta foto',
-                                    style: TextStyle(
+                                  Text(
+                                    widget.config.texts.useThisPhoto,
+                                    style: const TextStyle(
                                       color: Colors.white,
                                       fontSize: 16,
                                       fontWeight: FontWeight.w600,

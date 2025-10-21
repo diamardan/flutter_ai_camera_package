@@ -5,12 +5,14 @@ import 'package:permission_handler/permission_handler.dart';
 import 'widgets/face_detection_camera_simple.dart';
 import 'providers.dart';
 import 'dart:io';
+import 'models/camera_config.dart';
 
 class DatamexCameraOverlayScreen extends ConsumerStatefulWidget {
   final bool startsWithSelfie;
   final bool pickFromGalleryInitially;
   final bool useFaceDetection;
   final bool showFaceGuides;
+  final CameraConfig config;
 
   const DatamexCameraOverlayScreen({
     super.key,
@@ -18,6 +20,7 @@ class DatamexCameraOverlayScreen extends ConsumerStatefulWidget {
     this.pickFromGalleryInitially = false,
     this.useFaceDetection = false,
     this.showFaceGuides = true,
+    this.config = const CameraConfig(),
   });
 
   @override
@@ -58,6 +61,7 @@ class _DatamexCameraOverlayScreenState
             useFrontCamera: true,
             showFaceGuides: widget.showFaceGuides,
             removeBackground: removeBackground, // ✅ Desde provider
+            config: widget.config, // ✅ Propagar configuración
             // Callback no-op: la imagen ya está procesada dentro de la cámara
             onImageCaptured: (_) async {
               // Ya procesada, solo esperar

@@ -2,14 +2,20 @@ import 'dart:developer';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:datamex_camera_package/datamex_camera_package.dart';
+import 'package:itc_camera_package/datamex_camera_package.dart';
 import 'package:go_router/go_router.dart';
 import 'settings_panel.dart'; // Importar el panel de configuración
 
 // Proveedor local para manejar la imagen desde el host (opcional)
 final exampleImageProvider = StateProvider<File?>((ref) => null);
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // 🐛 Inicializar logger para debugging
+  await DebugLogger().init();
+  await dlog('🚀 App de ejemplo iniciada', tag: 'Main');
+  
   runApp(const ProviderScope(child: ExampleApp()));
 }
 
@@ -58,6 +64,19 @@ class HomePage extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Datamex Camera Example'),
         backgroundColor: Colors.blue.shade700,
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => const DebugLogOverlay(),
+              fullscreenDialog: true,
+            ),
+          );
+        },
+        backgroundColor: Colors.red.shade700,
+        tooltip: 'Ver Logs de Debug',
+        child: const Icon(Icons.bug_report),
       ),
       body: SingleChildScrollView(
         child: Padding(
