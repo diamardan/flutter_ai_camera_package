@@ -1,19 +1,14 @@
 import 'dart:io';
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:local_rembg/local_rembg.dart';
-import 'package:image/image.dart' as img;
 import 'providers.dart';
 import 'models/guideline_entry.dart';
 import 'package:go_router/go_router.dart';
-import 'services/edge_refinement_service.dart';
-import 'services/mlkit_background_removal.dart';
-import 'services/matte_utils.dart';
+import 'services/image_processing_service.dart'; // ✅ Servicio centralizado (SOLID)
 // GoRouter-only navigation is enforced; screens are resolved by routes.
 
 typedef ImageSelectedCallback = void Function(File? image);
@@ -40,6 +35,9 @@ class DatamexCameraWidget extends ConsumerStatefulWidget {
     this.showAcceptGuidelinesCheckbox = false,
     this.guidelinesObject,
     this.showFaceGuides = true,
+    this.showDebug = false, // ✅ Mostrar logs de debug
+    this.edgeBlurIntensity = 5.0, // ✅ Nivel de suavizado de bordes (0-10)
+    this.useSingleCaptureStep = false, // ✅ Usar 1 solo paso o múltiples pasos
   });
 
   final ImageSelectedCallback onImageSelected;
@@ -60,6 +58,17 @@ class DatamexCameraWidget extends ConsumerStatefulWidget {
   final List<dynamic>? guidelinesObject;
   /// Toggle facial landmarks/contours guides in overlay.
   final bool showFaceGuides;
+  /// Show debug logs and overlays
+  final bool showDebug;
+  /// Edge blur intensity for background removal (0-10)
+  /// 0 = No blur (sharp edges), 10 = Maximum blur (soft edges)
+  /// Default: 5.0
+  final double edgeBlurIntensity;
+  /// Use single capture step (fast mode) or multiple steps (2 ovals)
+  /// false = Default mode with 2 steps (medium oval → large oval)
+  /// true = Fast mode with 1 step (direct capture)
+  /// Default: false
+  final bool useSingleCaptureStep;
 
   @override
   ConsumerState<DatamexCameraWidget> createState() =>
@@ -73,196 +82,79 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
 
   /// Procesa la imagen removiendo el fondo si está habilitado
   /// Retorna la imagen procesada o la original si falla
+  /// ✅ USA SERVICIO CENTRALIZADO (SOLID)
   Future<File> _processImage(File file) async {
     // ⚠️ Si el widget está disposed, retornar imagen original sin procesamiento
     if (!mounted) {
-      debugPrint('[RemoveBackground] Widget disposed, skipping processing');
+      debugPrint('[ProcessImage] Widget disposed, skipping processing');
       return file;
     }
     
     // ✅ Leer desde provider (configurado por la app host)
     bool removeBackground;
-    bool useMlKit;
     
     try {
       removeBackground = ref.read(datamexRemoveBackgroundProvider);
       if (!removeBackground) {
+        debugPrint('[ProcessImage] Background removal DISABLED');
         return file; // Sin procesamiento
       }
-      useMlKit = ref.read(datamexUseMlKitForBackgroundProvider);
     } catch (e) {
-      debugPrint('[RemoveBackground] Error reading providers (widget disposed?): $e');
+      debugPrint('[ProcessImage] Error reading providers (widget disposed?): $e');
       return file; // Retornar original si hay error
     }
-
-    final methodName = useMlKit ? 'ML Kit (rápido)' : 'Local Rembg (preciso)';
     
-    widget.changeStatusMessageCallback('Eliminando fondo con $methodName...');
+    widget.changeStatusMessageCallback('Eliminando fondo con Local Rembg...');
     widget.loadStatusCallback(true);
     
     try {
-      debugPrint('[RemoveBackground] Método seleccionado: $methodName');
-      final stopwatch = Stopwatch()..start();
-      
-      Uint8List? processedBytes;
-      
-      if (useMlKit) {
-        // ⚡ MÉTODO RÁPIDO: ML Kit (1-2 segundos)
-        debugPrint('[RemoveBackground-MLKit] Iniciando procesamiento rápido...');
-        processedBytes = await MlKitBackgroundRemoval.removeBackground(
-          imagePath: file.path,
-          paddingFactor: 1.8, // Tamaño del óvalo (1.5 = ajustado, 2.0 = holgado)
-        ).timeout(
-          const Duration(seconds: 10),
-          onTimeout: () {
-            throw TimeoutException('ML Kit timeout');
-          },
-        );
-      } else {
-        // 🎯 MÉTODO PRECISO: Local Rembg (5-7 segundos)
-        debugPrint('[RemoveBackground-LocalRembg] Iniciando procesamiento de alta calidad...');
-        final LocalRembgResultModel result = await LocalRembg.removeBackground(
-          imagePath: file.path,
-          cropTheImage: true, // Crop automático del área segmentada
-        ).timeout(
-          const Duration(seconds: 20),
-          onTimeout: () {
-            throw TimeoutException('Local Rembg timeout');
-          },
-        );
-        processedBytes = result.imageBytes != null ? Uint8List.fromList(result.imageBytes!) : null;
+      if (widget.showDebug) {
+        debugPrint('[ProcessImage] 🚀 Using centralized ImageProcessingService (Local Rembg)');
+        debugPrint('[ProcessImage] Edge blur intensity: ${widget.edgeBlurIntensity}');
       }
       
-      stopwatch.stop();
-      debugPrint('[RemoveBackground] Tiempo de procesamiento: ${stopwatch.elapsedMilliseconds}ms con $methodName');
+      // ✅ USAR SERVICIO CENTRALIZADO (SOLID)
+      final result = await ImageProcessingService.processImageWithBackgroundRemoval(
+        inputFile: file,
+        applyEdgeRefinement: true,
+        edgeBlurIntensity: widget.edgeBlurIntensity,
+      );
       
-      if (processedBytes != null && processedBytes.isNotEmpty) {
-        // 🐛 DEBUG: Guardar imagen ORIGINAL
-        final debugDir = file.parent.path;
-        final debugTimestamp = DateTime.now().millisecondsSinceEpoch;
-        await File('$debugDir/DEBUG_1_original_$debugTimestamp.jpg').writeAsBytes(await file.readAsBytes());
-        debugPrint('[DEBUG] 1️⃣ Imagen original guardada');
-        
-        // 🐛 DEBUG: Guardar imagen SIN FONDO (PNG con transparencia)
-        await File('$debugDir/DEBUG_2_nobg_$debugTimestamp.png').writeAsBytes(processedBytes);
-        debugPrint('[DEBUG] 2️⃣ Imagen sin fondo (PNG) guardada');
-        
-        // ✨ APLICAR REFINAMIENTO DE BORDES (si está habilitado)
-        double edgeBlurIntensity = 0.0;
-        
-        // ⚠️ Leer provider con protección
-        if (mounted) {
-          try {
-            edgeBlurIntensity = ref.read(datamexEdgeBlurIntensityProvider);
-          } catch (e) {
-            debugPrint('[RemoveBackground] Error reading edgeBlur provider: $e');
-          }
-        }
-        
-        var finalImageBytes = processedBytes;
-        
-        if (edgeBlurIntensity > 0) {
-          widget.changeStatusMessageCallback('Refinando bordes...');
-          debugPrint('[RemoveBackground] Aplicando refinamiento de bordes (intensidad: $edgeBlurIntensity)');
-          
-          final refinedBytes = await EdgeRefinementService.refineEdges(
-            imageBytes: processedBytes,
-            intensity: edgeBlurIntensity,
-          );
-          
-          if (refinedBytes != null) {
-            finalImageBytes = refinedBytes;
-            debugPrint('[RemoveBackground] ✓ Bordes refinados exitosamente');
-            
-            // 🐛 DEBUG: Guardar imagen REFINADA
-            await File('$debugDir/DEBUG_3_refined_$debugTimestamp.png').writeAsBytes(refinedBytes);
-            debugPrint('[DEBUG] 3️⃣ Imagen refinada guardada');
-          } else {
-            debugPrint('[RemoveBackground] ⚠ No se pudo refinar, usando imagen sin refinar');
-          }
-        }
-        
-        // Crear nombre único .jpg y aplanar transparencia sobre BLANCO
-        final timestamp = DateTime.now().millisecondsSinceEpoch;
-        final suffix = useMlKit ? '_mlkit_nobg_$timestamp.jpg' : '_rembg_nobg_$timestamp.jpg';
-        final processedPath = file.path.replaceAll(
-          RegExp(r'\.(jpg|jpeg|png)$', caseSensitive: false),
-          suffix,
-        );
-
-        // Composición robusta a color blanco + encode JPG (evita halos y premultiplied alpha)
-        Uint8List outputBytes;
-        Uint8List? redOutputBytes; // Para debug con fondo rojo
-        
+      if (result == null) {
+        throw Exception('Image processing returned null');
+      }
+      
+      debugPrint('[ProcessImage] ✅ Processing SUCCESS - Using JPG: ${result.jpgFile.path}');
+      
+      // Actualizar provider si está montado
+      if (mounted) {
         try {
-          final img.Image? decoded = img.decodeImage(finalImageBytes);
-          if (decoded != null) {
-            // 🐛 DEBUG: Guardar imagen DECODIFICADA antes del composite
-            await File('$debugDir/DEBUG_3_decoded_$debugTimestamp.png').writeAsBytes(
-              img.encodePng(decoded),
-            );
-            debugPrint('[DEBUG] 3️⃣ Imagen decodificada (pre-composite) guardada');
-            
-            // Composite con fondo BLANCO (producción)
-            outputBytes = MatteUtils.flattenToColorJpg(
-              decoded,
-              bgColor: img.ColorRgba8(255, 255, 255, 255),
-              quality: 90,
-            );
-            
-            // 🐛 DEBUG: Composite con fondo ROJO (comparación)
-            redOutputBytes = MatteUtils.flattenToColorJpg(
-              decoded,
-              bgColor: img.ColorRgba8(255, 0, 0, 255), // Rojo puro
-              quality: 90,
-            );
-            
-            // 🐛 DEBUG: Guardar versión con fondo blanco
-            await File('$debugDir/DEBUG_4_white_bg_$debugTimestamp.jpg').writeAsBytes(outputBytes);
-            debugPrint('[DEBUG] 4️⃣ Imagen con fondo BLANCO guardada');
-            
-            // 🐛 DEBUG: Guardar versión con fondo rojo
-            await File('$debugDir/DEBUG_5_red_bg_$debugTimestamp.jpg').writeAsBytes(redOutputBytes);
-            debugPrint('[DEBUG] 5️⃣ Imagen con fondo ROJO guardada (comparación)');
-          } else {
-            final original = await File(file.path).readAsBytes();
-            final img.Image? orig = img.decodeImage(original);
-            outputBytes = orig != null
-                ? MatteUtils.flattenToColorJpg(orig, bgColor: img.ColorRgba8(255, 255, 255, 255), quality: 90)
-                : finalImageBytes;
-          }
-        } catch (_) {
-          // Fallback mínimo
-          outputBytes = MatteUtils.flattenBytesToColorJpg(finalImageBytes, bgColor: img.ColorRgba8(255, 255, 255, 255), quality: 90);
+          ref.read(_effectiveProvider.notifier).state = result.jpgFile;
+        } catch (e) {
+          debugPrint('[ProcessImage] Error updating provider: $e');
         }
-
-        final processedFile = File(processedPath);
-        await processedFile.writeAsBytes(outputBytes);
-        
-        // Verificar que el archivo se guardó correctamente
-        if (await processedFile.exists()) {
-          widget.changeStatusMessageCallback('✓ Fondo eliminado con $methodName');
-          debugPrint('[RemoveBackground] Imagen guardada: $processedPath');
-          debugPrint('[RemoveBackground] Tamaño: ${finalImageBytes.length} bytes');
-          widget.loadStatusCallback(false);
-          return processedFile; // Retornar imagen procesada
-        } else {
-          throw Exception('No se pudo guardar la imagen procesada');
-        }
-      } else {
-        throw Exception('La imagen procesada está vacía');
       }
-    } on TimeoutException catch (e) {
-      debugPrint('[RemoveBackground] ⚠️ Timeout: $e');
-      widget.changeStatusMessageCallback('⚠ Timeout: usando imagen original');
-      widget.loadStatusCallback(false);
-      return file; // Retornar imagen original
-    } catch (e, stackTrace) {
-      debugPrint('[RemoveBackground] ❌ Error: $e');
-      debugPrint('[RemoveBackground] StackTrace: $stackTrace');
-      widget.changeStatusMessageCallback('⚠ Error al eliminar fondo: usando imagen original');
-      widget.loadStatusCallback(false);
-      return file; // Retornar imagen original
+      
+      return result.jpgFile;
+      
+    } catch (e, stack) {
+      debugPrint('[ProcessImage] ❌ Error: $e');
+      debugPrint('[ProcessImage] Stack: $stack');
+      
+      // Actualizar provider con imagen original si está montado
+      if (mounted) {
+        try {
+          ref.read(_effectiveProvider.notifier).state = file;
+        } catch (e) {
+          debugPrint('[ProcessImage] Error updating provider with original: $e');
+        }
+      }
+      
+      return file;
+    } finally {
+      if (mounted) {
+        widget.loadStatusCallback(false);
+      }
     }
   }
 
@@ -432,6 +324,7 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
   @override
   Widget build(BuildContext context) {
     debugPrint('[DatamexCameraWidget] 🏗️ Building with showOverlay=${widget.showOverlay}, useFaceDetection=${widget.useFaceDetection}');
+    debugPrint('[DatamexCameraWidget] ⚡ PARAMS: showDebug=${widget.showDebug}, useSingleCaptureStep=${widget.useSingleCaptureStep}, edgeBlurIntensity=${widget.edgeBlurIntensity}');
     
     final imageFile = ref.watch(_effectiveProvider);
     final loading = ref.watch(datamexLoadingProvider);
@@ -536,6 +429,9 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
                   debugPrint('  showFaceGuides: ${widget.showFaceGuides}');
                   debugPrint('  showGuidelinesWindow: ${widget.showGuidelinesWindow}');
                   debugPrint('  startsWithSelfieCamera: ${widget.startsWithSelfieCamera}');
+                  debugPrint('  ⚡ showDebug: ${widget.showDebug}');
+                  debugPrint('  ⚡ edgeBlurIntensity: ${widget.edgeBlurIntensity}');
+                  debugPrint('  ⚡ useSingleCaptureStep: ${widget.useSingleCaptureStep}');
                   debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
                   
                   // 1. Guidelines flow if enabled
@@ -553,6 +449,9 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
                         startsWithSelfie: widget.startsWithSelfieCamera,
                         showOverlay: widget.showOverlay,
                         showFaceGuides: widget.showFaceGuides,
+                        showDebug: widget.showDebug,
+                        edgeBlurIntensity: widget.edgeBlurIntensity,
+                        useSingleCaptureStep: widget.useSingleCaptureStep,
                         // removeBackground se lee del provider, no se pasa por extra
                       ),
                     );
@@ -576,6 +475,9 @@ class _DatamexCameraWidgetState extends ConsumerState<DatamexCameraWidget> {
                         'startsWithSelfie': widget.startsWithSelfieCamera,
                         'showOverlay': widget.showOverlay,
                         'showFaceGuides': widget.showFaceGuides,
+                        'showDebug': widget.showDebug,
+                        'edgeBlurIntensity': widget.edgeBlurIntensity,
+                        'useSingleCaptureStep': widget.useSingleCaptureStep,
                         // removeBackground se lee del provider, no se pasa por extra
                       },
                     );

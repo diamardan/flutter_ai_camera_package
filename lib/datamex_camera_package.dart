@@ -11,7 +11,7 @@ export 'src/services/lighting_validator.dart';
 export 'src/models/camera_config.dart'; // ✅ Exportar configuración
 export 'src/services/lighting_corrector.dart';
 export 'src/services/edge_refinement_service.dart';
-export 'src/services/mlkit_background_removal.dart';
+export 'src/services/image_processing_service.dart'; // ✅ Servicio centralizado (SOLID)
 export 'src/services/custom_background_service.dart'; // Fondos personalizados
 export 'src/models/face_detection_result.dart';
 export 'src/models/guideline_entry.dart';

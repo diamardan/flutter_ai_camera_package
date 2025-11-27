@@ -19,6 +19,12 @@ class GuidelinesConfig {
   final bool showOverlay;
   /// Controls showing facial landmarks/contours guides in overlay.
   final bool showFaceGuides;
+  /// Show debug logs and overlays
+  final bool showDebug;
+  /// Edge blur intensity for background removal (0-10)
+  final double edgeBlurIntensity;
+  /// Use single capture step (fast mode) or multiple steps (2 ovals)
+  final bool useSingleCaptureStep;
   
   const GuidelinesConfig({
     required this.guidelines,
@@ -28,5 +34,8 @@ class GuidelinesConfig {
     required this.startsWithSelfie,
     required this.showOverlay,
     this.showFaceGuides = true,
+    this.showDebug = false,
+    this.edgeBlurIntensity = 5.0,
+    this.useSingleCaptureStep = false,
   });
 }

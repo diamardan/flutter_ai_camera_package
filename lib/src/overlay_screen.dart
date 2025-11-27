@@ -13,6 +13,9 @@ class DatamexCameraOverlayScreen extends ConsumerStatefulWidget {
   final bool useFaceDetection;
   final bool showFaceGuides;
   final CameraConfig config;
+  final bool showDebug; // ✅ Mostrar logs de debug
+  final double edgeBlurIntensity; // ✅ Nivel de suavizado de bordes (0-10)
+  final bool useSingleCaptureStep; // ✅ Usar 1 solo paso o múltiples pasos
 
   const DatamexCameraOverlayScreen({
     super.key,
@@ -21,6 +24,9 @@ class DatamexCameraOverlayScreen extends ConsumerStatefulWidget {
     this.useFaceDetection = false,
     this.showFaceGuides = true,
     this.config = const CameraConfig(),
+    this.showDebug = false,
+    this.edgeBlurIntensity = 5.0,
+    this.useSingleCaptureStep = false,
   });
 
   @override
@@ -51,7 +57,7 @@ class _DatamexCameraOverlayScreenState
     if (!mounted) return;
 
     if (status.isGranted) {
-      // ✅ Leer removeBackground del provider
+      // ✅ Leer configuración del provider
       final removeBackground = ref.read(datamexRemoveBackgroundProvider);
       
       final file = await Navigator.of(context).push<File?>(
@@ -62,6 +68,9 @@ class _DatamexCameraOverlayScreenState
             showFaceGuides: widget.showFaceGuides,
             removeBackground: removeBackground, // ✅ Desde provider
             config: widget.config, // ✅ Propagar configuración
+            showDebug: widget.showDebug, // ✅ Propagar showDebug
+            edgeBlurIntensity: widget.edgeBlurIntensity, // ✅ Propagar intensidad
+            useSingleCaptureStep: widget.useSingleCaptureStep, // ✅ Propagar modo de captura
             // Callback no-op: la imagen ya está procesada dentro de la cámara
             onImageCaptured: (_) async {
               // Ya procesada, solo esperar

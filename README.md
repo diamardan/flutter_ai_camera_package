@@ -240,7 +240,63 @@ flutter run
 - Check Info.plist (iOS) and AndroidManifest.xml (Android)
 - Test with `adb logcat` (Android) or Xcode console (iOS)
 
-## 📄 License
+## � Debugging
+
+### Device-Specific Issues (Samsung, Xiaomi, etc.)
+
+If face detection works on some devices but not others, use the integrated debug logging system:
+
+1. **Initialize logger at app startup**:
+   ```dart
+   import 'package:datamex_camera_package/datamex_camera_package.dart';
+   
+   void main() async {
+     WidgetsFlutterBinding.ensureInitialized();
+     await DebugLogger().init();
+     runApp(MyApp());
+   }
+   ```
+
+2. **Add debug button to your camera screen**:
+   ```dart
+   FloatingActionButton(
+     onPressed: () {
+       Navigator.push(
+         context,
+         MaterialPageRoute(
+           builder: (_) => const DebugLogOverlay(),
+           fullscreenDialog: true,
+         ),
+       );
+     },
+     child: const Icon(Icons.bug_report),
+   )
+   ```
+
+3. **Reproduce the issue and collect logs**:
+   - Open the camera on the problematic device
+   - Tap the debug button
+   - Copy or export logs
+   - Share logs for analysis
+
+For detailed troubleshooting steps specific to Samsung devices, see [DEBUG_SAMSUNG.md](DEBUG_SAMSUNG.md).
+
+### Common Issues
+
+**Samsung devices not detecting faces:**
+- Try changing `ResolutionPreset.medium` to `ResolutionPreset.low`
+- Try changing `FaceDetectorMode.accurate` to `FaceDetectorMode.fast`
+- See [DEBUG_SAMSUNG.md](DEBUG_SAMSUNG.md) for detailed solutions
+
+**Camera permission denied:**
+- Check runtime permissions are properly requested
+- Verify Info.plist/AndroidManifest.xml configuration
+
+**ML Kit initialization fails:**
+- Ensure device has internet connection on first run (ML Kit downloads models)
+- Check Google Play Services is updated (Android)
+
+## �📄 License
 
 This is a private package for internal use.
 

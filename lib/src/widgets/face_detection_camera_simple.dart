@@ -10,15 +10,13 @@ import 'dart:math' as math;
 import 'package:camera/camera.dart';
 import '../utils/debug_logger.dart';
 import '../ui/debug_log_overlay.dart';
-import 'package:local_rembg/local_rembg.dart';
 import '../core/platform_handler.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import '../services/face_detection_service.dart';
 import '../services/lighting_validator.dart';
+import '../services/image_processing_service.dart'; // ✅ Servicio centralizado (SOLID)
 import '../models/lighting_analysis.dart';
 import '../crop/simple_cropper.dart';
-import '../services/edge_refinement_service.dart';
-import '../services/matte_utils.dart';
 import '../models/camera_config.dart'; // ✅ Importar configuración
 
 /// 🎯 Enum para el sistema de pasos progresivos de captura
@@ -34,9 +32,12 @@ class FaceDetectionCameraSimple extends StatefulWidget {
   final Function(File?) onImageCaptured;
   final int requiredValidFrames;
   final bool showFaceGuides;
-  final bool removeBackground; // ✅ Nuevo parámetro
+  final bool removeBackground; // ✅ Activar/desactivar remoción de fondo
   final Function(String)? onStatusMessage; // ✅ Callback para mensajes
   final CameraConfig config; // ✅ Configuración de textos y colores
+  final bool showDebug; // ✅ Mostrar logs de debug
+  final double edgeBlurIntensity; // ✅ Nivel de suavizado de bordes (0-10)
+  final bool useSingleCaptureStep; // ✅ Usar 1 solo paso o múltiples pasos (2 óvalos)
   // Validation thresholds
   final double yawMaxDegrees;   // left/right turn tolerance
   final double pitchMaxDegrees; // up/down tilt tolerance
@@ -55,6 +56,9 @@ class FaceDetectionCameraSimple extends StatefulWidget {
     this.removeBackground = true, // ✅ Default true
     this.onStatusMessage,
     this.config = const CameraConfig(), // ✅ Default con textos en español
+    this.showDebug = false, // ✅ Default false
+    this.edgeBlurIntensity = 5.0, // ✅ Default 5.0 (0-10)
+    this.useSingleCaptureStep = false, // ✅ Default false (2 pasos: óvalo mediano → grande)
     this.yawMaxDegrees = 10.0,
     this.pitchMaxDegrees = 10.0,
     this.rollMaxDegrees = 8.0,
@@ -86,13 +90,17 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
   bool _showCaptureFlash = false; // ⚡ Flash visual cuando se toma la foto
   
   // 🎯 SISTEMA DE PASOS PROGRESIVOS
-  CaptureStep _currentStep = CaptureStep.step2FaceCentering; // ✅ Iniciar directo en paso 2
+  late CaptureStep _currentStep; // Se inicializa en initState según useSingleCaptureStep
   int _stepValidFrames = 0; // Frames válidos en el paso actual
   
   // Configuración de frames requeridos por paso (REDUCIDOS)
+  // 🎯 Frames requeridos para cada paso (a ~30 FPS):
+  // Paso 1: SALTADO (se inicia directo en paso 2)
+  // Paso 2: Óvalo pequeño/mediano (rostro centrado) - MÁS RÁPIDO
+  // Paso 3: Óvalo grande (cabeza + hombros) - RÁPIDO
   static const int _step1RequiredFrames = 0; // Paso 1: SALTADO
-  static const int _step2RequiredFrames = 10; // Paso 2: 10 frames (~0.3s)
-  static const int _step3RequiredFrames = 10; // Paso 3: 10 frames (~0.3s) antes de captura
+  static const int _step2RequiredFrames = 3; // Paso 2: 3 frames (~0.1 segundos a 30 FPS)
+  static const int _step3RequiredFrames = 5; // Paso 3: 5 frames (~0.16 segundos a 30 FPS) antes de captura
   
   // Animación continua para evitar sensación de freeze
   double _animationProgress = 0.0;
@@ -101,6 +109,15 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
   @override
   void initState() {
     super.initState();
+    // 🎯 Configurar paso inicial según parámetro
+    if (widget.useSingleCaptureStep) {
+      _currentStep = CaptureStep.step3FinalCapture; // Modo rápido: directo a captura final
+      debugPrint('[CaptureSteps] 🚀 MODO RÁPIDO ACTIVADO - Iniciando en step3FinalCapture');
+    } else {
+      _currentStep = CaptureStep.step2FaceCentering; // Modo por defecto: 2 pasos (paso2 → paso3)
+      debugPrint('[CaptureSteps] 📐 MODO ESTÁNDAR - Iniciando en step2FaceCentering');
+    }
+    debugPrint('[CaptureSteps] showDebug=${widget.showDebug}, useSingleCaptureStep=${widget.useSingleCaptureStep}');
     _init();
     _startAnimationTimer(); // Iniciar animación continua
   }
@@ -451,18 +468,24 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
               break;
               
             case CaptureStep.step2FaceCentering:
-              debugPrint('[CaptureSteps] ✅ Paso 2 completado → Avanzando a Paso 3 (Final)');
-              if (mounted) {
-                setState(() {
-                  _currentStep = CaptureStep.step3FinalCapture;
-                  _stepValidFrames = 0;
-                  _statusMessage = widget.config.texts.preparingFinalCapture;
-                });
+              // ⚡ Si está en modo de 1 solo paso, capturar directamente sin avanzar a paso 3
+              if (widget.useSingleCaptureStep) {
+                debugPrint('[CaptureSteps] ✅ Modo 1 paso (desde step2): Capturando directamente');
+                await _captureImage();
+              } else {
+                debugPrint('[CaptureSteps] ✅ Paso 2 completado → Avanzando a Paso 3 (Final)');
+                if (mounted) {
+                  setState(() {
+                    _currentStep = CaptureStep.step3FinalCapture;
+                    _stepValidFrames = 0;
+                    _statusMessage = widget.config.texts.preparingFinalCapture;
+                  });
+                }
               }
               break;
               
             case CaptureStep.step3FinalCapture:
-              debugPrint('[CaptureSteps] ✅ Paso 3 completado → CAPTURANDO FOTO');
+              debugPrint('[CaptureSteps] ✅ Paso 3 completado → CAPTURANDO FOTO (useSingleCaptureStep=${widget.useSingleCaptureStep})');
               await _captureImage();
               break;
           }
@@ -580,7 +603,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       
       // ✅ PASO 4: AHORA SÍ mostrar dialog "Procesando imagen..." para crop/background removal
       if (mounted) {
-        debugPrint('[Capture] 🎨 Showing processing dialog...');
+        debugPrint('[Capture] 🎨 Showing processing dialog... (showDebug=${widget.showDebug})');
         showDialog(
           context: context,
           barrierDismissible: false,
@@ -619,8 +642,15 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       }
       
       if (!mounted) return;
-      // Espejar horizontalmente la imagen para selfies (modo espejo)
+      
+      // Renombrar archivo original con prefijo "original_"
       File file = File(pic.path);
+      final originalTimestamp = DateTime.now().millisecondsSinceEpoch;
+      final originalPath = '${file.parent.path}/original_$originalTimestamp.jpg';
+      file = await file.rename(originalPath);
+      debugPrint('[Capture] Original saved: $originalPath');
+      
+      // Espejar horizontalmente la imagen para selfies (modo espejo)
       Uint8List? mirroredBytes;
       if (widget.useFrontCamera) {
         try {
@@ -687,130 +717,66 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       */
       debugPrint('[Capture] ⚠️ Lighting correction DISABLED for debugging white preview issue');
 
-      // ✅ PROCESAR IMAGEN (removeBackground + edge refinement) ANTES DE PREVIEW
+      // ✅ PROCESAR IMAGEN usando servicio centralizado (SOLID)
+      if (widget.showDebug) {
+        debugPrint('[Capture] 🔍 Checking background removal: removeBackground=${widget.removeBackground}');
+      }
+      
       if (widget.removeBackground) {
-        debugPrint('[Capture] Starting background removal process...');
-        
-        // 🐛 DEBUG: Guardar imagen ORIGINAL (capturada)
-        final debugDir = file.parent.path;
-        final debugTimestamp = DateTime.now().millisecondsSinceEpoch;
-        await File('$debugDir/DEBUG_1_original_$debugTimestamp.jpg').writeAsBytes(await file.readAsBytes());
-        debugPrint('[DEBUG] 1️⃣ Imagen original guardada');
+        if (widget.showDebug) {
+          debugPrint('[Capture] ✅ Starting centralized image processing with Local Rembg...');
+          debugPrint('[Capture] Edge blur intensity: ${widget.edgeBlurIntensity}');
+        }
         
         try {
-          // Usar Local Rembg (podría parametrizarse luego)
-          final stopwatch = Stopwatch()..start();
-          
-          final LocalRembgResultModel result = await LocalRembg.removeBackground(
-            imagePath: file.path,
-            cropTheImage: true,
-          ).timeout(
-            const Duration(seconds: 20),
-            onTimeout: () {
-              throw TimeoutException('Background removal timeout');
-            },
+          final result = await ImageProcessingService.processImageWithBackgroundRemoval(
+            inputFile: file,
+            applyEdgeRefinement: true,
+            edgeBlurIntensity: widget.edgeBlurIntensity,
           );
           
-          stopwatch.stop();
-          debugPrint('[Capture] Background removal completed in ${stopwatch.elapsedMilliseconds}ms');
-          
-          if (result.imageBytes != null && result.imageBytes!.isNotEmpty) {
-            // 🐛 DEBUG: Guardar imagen SIN FONDO (PNG con transparencia)
-            await File('$debugDir/DEBUG_2_nobg_$debugTimestamp.png').writeAsBytes(result.imageBytes!);
-            debugPrint('[DEBUG] 2️⃣ Imagen sin fondo (PNG) guardada');
-            
-            // Aplicar edge refinement si está disponible
-            Uint8List pngWithAlpha = Uint8List.fromList(result.imageBytes!);
-            
-            try {
-              final refined = await EdgeRefinementService.refineEdges(
-                imageBytes: pngWithAlpha,
-                intensity: 3,
-              );
-              if (refined != null) {
-                pngWithAlpha = refined;
-                debugPrint('[Capture] Edge refinement applied');
-                
-                // 🐛 DEBUG: Guardar imagen REFINADA
-                await File('$debugDir/DEBUG_3_refined_$debugTimestamp.png').writeAsBytes(refined);
-                debugPrint('[DEBUG] 3️⃣ Imagen refinada guardada');
-              }
-            } catch (e) {
-              debugPrint('[Capture] Edge refinement failed, using unrefined: $e');
+          if (result != null) {
+            // Usar el JPG con fondo blanco como resultado final
+            file = result.jpgFile;
+            if (widget.showDebug) {
+              debugPrint('[Capture] ✅✅✅ Image processing SUCCESS - Using: ${file.path}');
             }
-            
-            // ✅ CONVERSIÓN DIRECTA PNG → JPG con fondo BLANCO
-            debugPrint('[Capture] 🎨 Convirtiendo PNG (${pngWithAlpha.length} bytes) a JPG con fondo blanco...');
-            
-            // 🐛 DEBUG: Decodificar y guardar antes del composite
-            final img.Image? decoded = img.decodeImage(pngWithAlpha);
-            if (decoded != null) {
-              await File('$debugDir/DEBUG_4_decoded_$debugTimestamp.png').writeAsBytes(
-                img.encodePng(decoded),
-              );
-              debugPrint('[DEBUG] 4️⃣ Imagen decodificada (pre-composite) guardada');
-            }
-            
-            final Uint8List jpgBytes = MatteUtils.flattenBytesToColorJpg(
-              pngWithAlpha,
-              bgColor: img.ColorRgba8(255, 255, 255, 255),
-              quality: 90,
-            );
-            
-            debugPrint('[Capture] ✅ JPG generado: ${jpgBytes.length} bytes');
-            
-            // 🐛 DEBUG: Guardar JPG con fondo BLANCO
-            await File('$debugDir/DEBUG_5_white_bg_$debugTimestamp.jpg').writeAsBytes(jpgBytes);
-            debugPrint('[DEBUG] 5️⃣ Imagen con fondo BLANCO guardada');
-            
-            // 🐛 DEBUG: Generar y guardar versión con fondo ROJO (comparación)
-            if (decoded != null) {
-              final Uint8List redJpgBytes = MatteUtils.flattenToColorJpg(
-                decoded,
-                bgColor: img.ColorRgba8(255, 0, 0, 255), // Rojo puro
-                quality: 90,
-              );
-              await File('$debugDir/DEBUG_6_red_bg_$debugTimestamp.jpg').writeAsBytes(redJpgBytes);
-              debugPrint('[DEBUG] 6️⃣ Imagen con fondo ROJO guardada (comparación)');
-            }
-            
-            // Guardar JPG final
-            final timestamp = DateTime.now().millisecondsSinceEpoch;
-            final processedPath = file.path.replaceAll(
-              RegExp(r'\.(jpg|jpeg|png)$', caseSensitive: false),
-              '_processed_$timestamp.jpg',
-            );
-            
-            final processedFile = File(processedPath);
-            await processedFile.writeAsBytes(jpgBytes);
-            
-            if (await processedFile.exists()) {
-              file = processedFile;
-              debugPrint('[Capture] ✅ Processed JPG saved: $processedPath');
-            } else {
-              debugPrint('[Capture] ❌ Failed to save processed file');
+          } else {
+            if (widget.showDebug) {
+              debugPrint('[Capture] ❌ Image processing returned NULL - USING ORIGINAL');
             }
           }
-        } on TimeoutException catch (e) {
-          debugPrint('[Capture] ⚠️ Timeout: $e - using original image');
         } catch (e, stack) {
-          debugPrint('[Capture] ❌ Background removal error: $e');
-          debugPrint('[Capture] Stack: $stack');
+          if (widget.showDebug) {
+            debugPrint('[Capture] ❌ Image processing error: $e');
+            debugPrint('[Capture] Stack: $stack');
+          }
           // Continuar con imagen original
+        }
+      } else {
+        if (widget.showDebug) {
+          debugPrint('[Capture] ⏭️ Background removal DISABLED (removeBackground=false)');
         }
       }
       
       // El callback onImageCaptured recibe la imagen YA PROCESADA
-      debugPrint('[Capture] Calling onImageCaptured with processed image...');
+      if (widget.showDebug) {
+        debugPrint('[Capture] Calling onImageCaptured with processed image...');
+      }
+      debugPrint('[Capture] 📸 Calling onImageCaptured callback...');
       await widget.onImageCaptured(file);
       
       // Cerrar dialog de procesamiento
+      debugPrint('[Capture] 🔴 Attempting to close processing dialog... (mounted=$mounted)');
       if (mounted) {
         Navigator.of(context, rootNavigator: true).pop(); // Cerrar dialog
+        debugPrint('[Capture] ✅ Processing dialog closed successfully');
         setState(() {
           _statusMessage = widget.config.texts.imageProcessed;
           _isProcessing = false;
         });
+      } else {
+        debugPrint('[Capture] ❌ Cannot close dialog - widget not mounted');
       }
 
       // Oculta la textura de la cámara durante la navegación para evitar errores de Impeller
@@ -1022,43 +988,44 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
               ),
             ),
           ),
-        // 🐛 BOTÓN FLOTANTE DE DEBUG (esquina superior derecha)
-        Positioned(
-          top: 60,
-          right: 16,
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              onTap: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => const DebugLogOverlay(),
-                    fullscreenDialog: true,
-                  ),
-                );
-              },
-              child: Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.red.withValues(alpha: 0.8),
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.3),
-                      blurRadius: 8,
-                      offset: const Offset(0, 2),
+        // 🐛 BOTÓN FLOTANTE DE DEBUG (esquina superior derecha) - Solo visible si showDebug=true
+        if (widget.showDebug)
+          Positioned(
+            top: 60,
+            right: 16,
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const DebugLogOverlay(),
+                      fullscreenDialog: true,
                     ),
-                  ],
-                ),
-                child: const Icon(
-                  Icons.bug_report,
-                  color: Colors.white,
-                  size: 24,
+                  );
+                },
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withValues(alpha: 0.8),
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.3),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: const Icon(
+                    Icons.bug_report,
+                    color: Colors.white,
+                    size: 24,
+                  ),
                 ),
               ),
             ),
           ),
-        ),
       ]),
     );
   }

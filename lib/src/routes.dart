@@ -23,14 +23,22 @@ GoRoute datamexOverlayRoute({
       bool useFD = useFaceDetection || qp['useFaceDetection'] == 'true';
       bool startsSelfie = false;
       bool showFaceGuides = true;
+      bool showDebug = false;
+      double edgeBlurIntensity = 5.0;
+      bool useSingleCaptureStep = false;
       CameraConfig config = const CameraConfig();
       // ❌ removeBackground se lee del PROVIDER, no del extra
       if (extra is Map) {
+        debugPrint('[Route] 📦 RECEIVED EXTRA MAP: $extra');
         if (extra['useFaceDetection'] is bool) useFD = extra['useFaceDetection'] as bool;
         if (extra['startsWithSelfie'] is bool) startsSelfie = extra['startsWithSelfie'] as bool;
         if (extra['showFaceGuides'] is bool) showFaceGuides = extra['showFaceGuides'] as bool;
         if (extra['config'] is CameraConfig) config = extra['config'] as CameraConfig;
+        if (extra['showDebug'] is bool) showDebug = extra['showDebug'] as bool;
+        if (extra['edgeBlurIntensity'] is double) edgeBlurIntensity = extra['edgeBlurIntensity'] as double;
+        if (extra['useSingleCaptureStep'] is bool) useSingleCaptureStep = extra['useSingleCaptureStep'] as bool;
       }
+      debugPrint('[Route] ⚡ FINAL VALUES: showDebug=$showDebug, edgeBlurIntensity=$edgeBlurIntensity, useSingleCaptureStep=$useSingleCaptureStep');
       return MaterialPage<File?>(
         key: state.pageKey,
         child: DatamexCameraOverlayScreen(
@@ -38,6 +46,9 @@ GoRoute datamexOverlayRoute({
           startsWithSelfie: startsSelfie,
           showFaceGuides: showFaceGuides,
           config: config,
+          showDebug: showDebug,
+          edgeBlurIntensity: edgeBlurIntensity,
+          useSingleCaptureStep: useSingleCaptureStep,
           // removeBackground se lee internamente del provider
         ),
       );

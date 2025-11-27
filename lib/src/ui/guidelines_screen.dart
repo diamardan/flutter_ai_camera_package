@@ -101,6 +101,9 @@ class GuidelinesScreen extends ConsumerWidget {
                                 'startsWithSelfie': config.startsWithSelfie,
                                 'showOverlay': config.showOverlay,
                                 'showFaceGuides': config.showFaceGuides,
+                                'showDebug': config.showDebug,
+                                'edgeBlurIntensity': config.edgeBlurIntensity,
+                                'useSingleCaptureStep': config.useSingleCaptureStep,
                               },
                             );
                             if (!context.mounted) return;
