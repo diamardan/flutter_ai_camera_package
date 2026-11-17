@@ -104,6 +104,8 @@ class GuidelinesScreen extends ConsumerWidget {
                                 'showDebug': config.showDebug,
                                 'edgeBlurIntensity': config.edgeBlurIntensity,
                                 'useSingleCaptureStep': config.useSingleCaptureStep,
+                                'showGuidelinesDialog': config.showGuidelinesDialog,
+                                'guidelinesDialogItems': config.guidelinesDialogItems,
                               },
                             );
                             if (!context.mounted) return;

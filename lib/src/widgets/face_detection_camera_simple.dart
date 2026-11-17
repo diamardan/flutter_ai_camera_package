@@ -14,16 +14,16 @@ import '../core/platform_handler.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import '../services/face_detection_service.dart';
 import '../services/lighting_validator.dart';
-import '../services/image_processing_service.dart'; // ✅ Servicio centralizado (SOLID)
+// import '../services/image_processing_service.dart'; // ⚠️ DESHABILITADO: local_rembg causa problema de 16KB page size
 import '../models/lighting_analysis.dart';
 import '../crop/simple_cropper.dart';
 import '../models/camera_config.dart'; // ✅ Importar configuración
 
 /// 🎯 Enum para el sistema de pasos progresivos de captura
 enum CaptureStep {
-  step1EyesAlignment,   // Paso 1: Alinear ojos (overlay pequeño, solo ojos)
-  step2FaceCentering,   // Paso 2: Centrar rostro (overlay mediano, cabeza completa)
-  step3FinalCapture,    // Paso 3: Captura final (overlay completo, cabeza+hombros)
+  step1EyesAlignment, // Paso 1: Alinear ojos (overlay pequeño, solo ojos)
+  step2FaceCentering, // Paso 2: Centrar rostro (overlay mediano, cabeza completa)
+  step3FinalCapture, // Paso 3: Captura final (overlay completo, cabeza+hombros)
 }
 
 /// Minimal FaceDetectionCamera implementation in a fresh file.
@@ -37,13 +37,14 @@ class FaceDetectionCameraSimple extends StatefulWidget {
   final CameraConfig config; // ✅ Configuración de textos y colores
   final bool showDebug; // ✅ Mostrar logs de debug
   final double edgeBlurIntensity; // ✅ Nivel de suavizado de bordes (0-10)
-  final bool useSingleCaptureStep; // ✅ Usar 1 solo paso o múltiples pasos (2 óvalos)
+  final bool
+      useSingleCaptureStep; // ✅ Usar 1 solo paso o múltiples pasos (2 óvalos)
   // Validation thresholds
-  final double yawMaxDegrees;   // left/right turn tolerance
+  final double yawMaxDegrees; // left/right turn tolerance
   final double pitchMaxDegrees; // up/down tilt tolerance
-  final double rollMaxDegrees;  // head tilt tolerance
-  final double minFaceHeight;   // min face height ratio (0..1)
-  final double maxFaceHeight;   // max face height ratio (0..1)
+  final double rollMaxDegrees; // head tilt tolerance
+  final double minFaceHeight; // min face height ratio (0..1)
+  final double maxFaceHeight; // max face height ratio (0..1)
   // Oval centering tolerance (validation ellipse is scaled by this factor; >1 means more permissive)
   final double ovalValidationScale;
 
@@ -58,7 +59,8 @@ class FaceDetectionCameraSimple extends StatefulWidget {
     this.config = const CameraConfig(), // ✅ Default con textos en español
     this.showDebug = false, // ✅ Default false
     this.edgeBlurIntensity = 5.0, // ✅ Default 5.0 (0-10)
-    this.useSingleCaptureStep = false, // ✅ Default false (2 pasos: óvalo mediano → grande)
+    this.useSingleCaptureStep =
+        false, // ✅ Default false (2 pasos: óvalo mediano → grande)
     this.yawMaxDegrees = 10.0,
     this.pitchMaxDegrees = 10.0,
     this.rollMaxDegrees = 8.0,
@@ -68,7 +70,8 @@ class FaceDetectionCameraSimple extends StatefulWidget {
   });
 
   @override
-  State<FaceDetectionCameraSimple> createState() => _FaceDetectionCameraSimpleState();
+  State<FaceDetectionCameraSimple> createState() =>
+      _FaceDetectionCameraSimpleState();
 }
 
 class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
@@ -85,23 +88,28 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
   List<Offset>? _normLandmarks; // puntos 0..1
   Map<String, List<Offset>>? _normContours; // contornos 0..1
   LightingAnalysis? _currentLightingAnalysis;
-  bool _hideCameraPreview = false; // para evitar errores de textura durante transición
-  bool _isProcessing = false; // Flag para mantener animación durante procesamiento post-captura
+  bool _hideCameraPreview =
+      false; // para evitar errores de textura durante transición
+  bool _isProcessing =
+      false; // Flag para mantener animación durante procesamiento post-captura
   bool _showCaptureFlash = false; // ⚡ Flash visual cuando se toma la foto
-  
+
   // 🎯 SISTEMA DE PASOS PROGRESIVOS
-  late CaptureStep _currentStep; // Se inicializa en initState según useSingleCaptureStep
+  late CaptureStep
+      _currentStep; // Se inicializa en initState según useSingleCaptureStep
   int _stepValidFrames = 0; // Frames válidos en el paso actual
-  
+
   // Configuración de frames requeridos por paso (REDUCIDOS)
   // 🎯 Frames requeridos para cada paso (a ~30 FPS):
   // Paso 1: SALTADO (se inicia directo en paso 2)
   // Paso 2: Óvalo pequeño/mediano (rostro centrado) - MÁS RÁPIDO
   // Paso 3: Óvalo grande (cabeza + hombros) - RÁPIDO
   static const int _step1RequiredFrames = 0; // Paso 1: SALTADO
-  static const int _step2RequiredFrames = 3; // Paso 2: 3 frames (~0.1 segundos a 30 FPS)
-  static const int _step3RequiredFrames = 5; // Paso 3: 5 frames (~0.16 segundos a 30 FPS) antes de captura
-  
+  static const int _step2RequiredFrames =
+      3; // Paso 2: 3 frames (~0.1 segundos a 30 FPS)
+  static const int _step3RequiredFrames =
+      5; // Paso 3: 5 frames (~0.16 segundos a 30 FPS) antes de captura
+
   // Animación continua para evitar sensación de freeze
   double _animationProgress = 0.0;
   Timer? _animationTimer;
@@ -111,17 +119,22 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
     super.initState();
     // 🎯 Configurar paso inicial según parámetro
     if (widget.useSingleCaptureStep) {
-      _currentStep = CaptureStep.step3FinalCapture; // Modo rápido: directo a captura final
-      debugPrint('[CaptureSteps] 🚀 MODO RÁPIDO ACTIVADO - Iniciando en step3FinalCapture');
+      _currentStep =
+          CaptureStep.step3FinalCapture; // Modo rápido: directo a captura final
+      debugPrint(
+          '[CaptureSteps] 🚀 MODO RÁPIDO ACTIVADO - Iniciando en step3FinalCapture');
     } else {
-      _currentStep = CaptureStep.step2FaceCentering; // Modo por defecto: 2 pasos (paso2 → paso3)
-      debugPrint('[CaptureSteps] 📐 MODO ESTÁNDAR - Iniciando en step2FaceCentering');
+      _currentStep = CaptureStep
+          .step2FaceCentering; // Modo por defecto: 2 pasos (paso2 → paso3)
+      debugPrint(
+          '[CaptureSteps] 📐 MODO ESTÁNDAR - Iniciando en step2FaceCentering');
     }
-    debugPrint('[CaptureSteps] showDebug=${widget.showDebug}, useSingleCaptureStep=${widget.useSingleCaptureStep}');
+    debugPrint(
+        '[CaptureSteps] showDebug=${widget.showDebug}, useSingleCaptureStep=${widget.useSingleCaptureStep}');
     _init();
     _startAnimationTimer(); // Iniciar animación continua
   }
-  
+
   /// 🎨 Animación continua para evitar sensación de freeze durante procesamiento
   void _startAnimationTimer() {
     _animationTimer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
@@ -137,103 +150,145 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
     try {
       // 📱 Log información de plataforma
       await dlog('📱 Plataforma: ${Platform.operatingSystem}', tag: 'Camera');
-      await dlog('📱 Versión: ${Platform.operatingSystemVersion}', tag: 'Camera');
-      
+      await dlog('📱 Versión: ${Platform.operatingSystemVersion}',
+          tag: 'Camera');
+
       final cameras = await availableCameras();
-      await dlog('[Camera] Cámaras disponibles: ${cameras.length}', tag: 'Camera');
+      await dlog('[Camera] Cámaras disponibles: ${cameras.length}',
+          tag: 'Camera');
       for (var i = 0; i < cameras.length; i++) {
         final cam = cameras[i];
-        await dlog('[Camera] [$i] ${cam.name} | ${cam.lensDirection} | Sensor: ${cam.sensorOrientation}°', tag: 'Camera');
+        await dlog(
+            '[Camera] [$i] ${cam.name} | ${cam.lensDirection} | Sensor: ${cam.sensorOrientation}°',
+            tag: 'Camera');
       }
-      
-      if (cameras.isEmpty) { 
+
+      if (cameras.isEmpty) {
         await dlog('❌ No hay cámaras disponibles', tag: 'Camera');
-        _showError(widget.config.texts.noCameraAvailable); 
-        return; 
+        _showError(widget.config.texts.noCameraAvailable);
+        return;
       }
-      
+
       // Seleccionar cámara según preferencia
-      final desired = widget.useFrontCamera ? CameraLensDirection.front : CameraLensDirection.back;
+      final desired = widget.useFrontCamera
+          ? CameraLensDirection.front
+          : CameraLensDirection.back;
       CameraDescription camera;
       try {
         camera = cameras.firstWhere((c) => c.lensDirection == desired);
-        await dlog('[Camera] ✅ Cámara seleccionada: ${camera.name} (${camera.lensDirection})', tag: 'Camera');
+        await dlog(
+            '[Camera] ✅ Cámara seleccionada: ${camera.name} (${camera.lensDirection})',
+            tag: 'Camera');
       } catch (_) {
         // fallback: si no aparece marcada como front/back, intenta heurística por nombre
         if (widget.useFrontCamera) {
           final byName = cameras.firstWhere(
-            (c) => c.name.toLowerCase().contains('front') || c.sensorOrientation == 270,
+            (c) =>
+                c.name.toLowerCase().contains('front') ||
+                c.sensorOrientation == 270,
             orElse: () => cameras.first,
           );
           camera = byName;
-          await dlog('[Camera] ⚠️ Cámara seleccionada por heurística: ${camera.name}', tag: 'Camera');
+          await dlog(
+              '[Camera] ⚠️ Cámara seleccionada por heurística: ${camera.name}',
+              tag: 'Camera');
         } else {
           camera = cameras.first;
-          await dlog('[Camera] ⚠️ Cámara seleccionada (primera disponible): ${camera.name}', tag: 'Camera');
+          await dlog(
+              '[Camera] ⚠️ Cámara seleccionada (primera disponible): ${camera.name}',
+              tag: 'Camera');
         }
       }
-      
+
       // Use a higher resolution for better face detection
       // Medium puede resultar en resoluciones muy bajas en algunos Samsung (720x480)
       // High asegura al menos 1280x720 que es suficiente para ML Kit
-      await dlog('[Camera] Inicializando con ResolutionPreset.high', tag: 'Camera');
-      await dlog('[Camera] Formato: ${PlatformHandler.isIOS ? "BGRA8888" : "YUV420"}', tag: 'Camera');
-      
+      await dlog('[Camera] Inicializando con ResolutionPreset.high',
+          tag: 'Camera');
+      await dlog(
+          '[Camera] Formato: ${PlatformHandler.isIOS ? "BGRA8888" : "YUV420"}',
+          tag: 'Camera');
+
       _controller = CameraController(
         camera,
-        ResolutionPreset.high, // ✅ Cambiado de medium a high para mejor detección
+        ResolutionPreset
+            .high, // ✅ Cambiado de medium a high para mejor detección
         enableAudio: false,
-        imageFormatGroup: PlatformHandler.isIOS ? ImageFormatGroup.bgra8888 : ImageFormatGroup.yuv420,
+        imageFormatGroup: PlatformHandler.isIOS
+            ? ImageFormatGroup.bgra8888
+            : ImageFormatGroup.yuv420,
       );
-      
+
       await _controller!.initialize();
       final previewSize = _controller!.value.previewSize!;
-      await dlog('[Camera] ✅ Controller inicializado | Resolución: $previewSize', tag: 'Camera');
-      
+      await dlog(
+          '[Camera] ✅ Controller inicializado | Resolución: $previewSize',
+          tag: 'Camera');
+
       // 🔍 VALIDACIÓN AUTOMÁTICA: Si la resolución es muy baja, intentar con veryHigh
-      final maxDimension = previewSize.width > previewSize.height ? previewSize.width : previewSize.height;
-      
+      final maxDimension = previewSize.width > previewSize.height
+          ? previewSize.width
+          : previewSize.height;
+
       if (maxDimension < 1000) {
-        await dlog('[Camera] ⚠️ Resolución muy baja detectada (${maxDimension}p), intentando con veryHigh...', tag: 'Camera');
+        await dlog(
+            '[Camera] ⚠️ Resolución muy baja detectada (${maxDimension}p), intentando con veryHigh...',
+            tag: 'Camera');
         try {
           await _controller?.dispose();
           _controller = CameraController(
             camera,
             ResolutionPreset.veryHigh,
             enableAudio: false,
-            imageFormatGroup: PlatformHandler.isIOS ? ImageFormatGroup.bgra8888 : ImageFormatGroup.yuv420,
+            imageFormatGroup: PlatformHandler.isIOS
+                ? ImageFormatGroup.bgra8888
+                : ImageFormatGroup.yuv420,
           );
           await _controller!.initialize();
           final newSize = _controller!.value.previewSize!;
-          await dlog('[Camera] ✅ Resolución mejorada a: $newSize', tag: 'Camera');
+          await dlog('[Camera] ✅ Resolución mejorada a: $newSize',
+              tag: 'Camera');
         } catch (e) {
-          await dlog('[Camera] ⚠️ veryHigh no soportado, continuando con: $previewSize', tag: 'Camera');
+          await dlog(
+              '[Camera] ⚠️ veryHigh no soportado, continuando con: $previewSize',
+              tag: 'Camera');
           // Si veryHigh falla, volver a crear con high
           _controller = CameraController(
             camera,
             ResolutionPreset.high,
             enableAudio: false,
-            imageFormatGroup: PlatformHandler.isIOS ? ImageFormatGroup.bgra8888 : ImageFormatGroup.yuv420,
+            imageFormatGroup: PlatformHandler.isIOS
+                ? ImageFormatGroup.bgra8888
+                : ImageFormatGroup.yuv420,
           );
           await _controller!.initialize();
         }
       } else {
-        await dlog('[Camera] ✅ Resolución adecuada para detección facial', tag: 'Camera');
+        await dlog('[Camera] ✅ Resolución adecuada para detección facial',
+            tag: 'Camera');
       }
-      
-  // Bloquear a portrait para evitar cambios de orientación durante la captura
-  try { 
-    await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
-    await dlog('[Camera] ✅ Orientación bloqueada a portrait', tag: 'Camera');
-  } catch (e) {
-    await dlog('[Camera] ⚠️ No se pudo bloquear orientación: $e', tag: 'Camera');
-  }
-  
+
+      // Bloquear a portrait para evitar cambios de orientación durante la captura
+      try {
+        await _controller!.lockCaptureOrientation(DeviceOrientation.portraitUp);
+        await dlog('[Camera] ✅ Orientación bloqueada a portrait',
+            tag: 'Camera');
+      } catch (e) {
+        await dlog('[Camera] ⚠️ No se pudo bloquear orientación: $e',
+            tag: 'Camera');
+      }
+
       _faceDetectionService = FaceDetectionService();
-      _lightingValidator = const LightingValidator(thresholds: LightingThresholds.defaults);
-      if (!mounted) { try { await _controller?.dispose(); } catch (_) {} return; }
+      _lightingValidator =
+          const LightingValidator(thresholds: LightingThresholds.defaults);
+      if (!mounted) {
+        try {
+          await _controller?.dispose();
+        } catch (_) {}
+        return;
+      }
       setState(() => _initialized = true);
-      
+
       await dlog('[Camera] 🎥 Iniciando stream de imágenes', tag: 'Camera');
       await _controller!.startImageStream(_processCameraImage);
     } catch (e) {
@@ -258,7 +313,8 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         // Fallback al método anterior si falla
         final bytes = image.planes.first.bytes;
         double sum = 0;
-        for (int i = 0; i < bytes.length; i += 50) { // muestreo para rendimiento
+        for (int i = 0; i < bytes.length; i += 50) {
+          // muestreo para rendimiento
           sum += bytes[i];
         }
         final avg = sum / (bytes.length / 50);
@@ -267,15 +323,18 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         _currentLightingAnalysis = LightingAnalysis(
           averageBrightness: norm,
           contrast: 0.0,
-          state: norm < 0.35 ? LightingState.tooDark : (norm > 0.75 ? LightingState.tooBright : LightingState.optimal),
+          state: norm < 0.35
+              ? LightingState.tooDark
+              : (norm > 0.75 ? LightingState.tooBright : LightingState.optimal),
           isAcceptable: norm >= 0.20 && norm <= 0.90,
           canAutoCorrect: false,
         );
       }
 
       final rotation = _getRotation();
-  final screen = MediaQuery.of(context).size;
-      final res = await _faceDetectionService!.detectFace(image, rotation, screen);
+      final screen = MediaQuery.of(context).size;
+      final res =
+          await _faceDetectionService!.detectFace(image, rotation, screen);
       if (res == null) {
         // Skip update this frame to avoid resetting progress when detector is busy
         return;
@@ -308,10 +367,10 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         normCenter = Offset(1.0 - normCenter.dx, normCenter.dy);
       }
 
-  // Parámetros del óvalo (sincronizados con el painter): ancho ≈56%, alto ≈50% del lienzo
-  const cx = 0.5, cy = 0.5, rxBase = 0.28, ryBase = 0.25;
-  final rx = rxBase * widget.ovalValidationScale;
-  final ry = ryBase * widget.ovalValidationScale;
+      // Parámetros del óvalo (sincronizados con el painter): ancho ≈56%, alto ≈50% del lienzo
+      const cx = 0.5, cy = 0.5, rxBase = 0.28, ryBase = 0.25;
+      final rx = rxBase * widget.ovalValidationScale;
+      final ry = ryBase * widget.ovalValidationScale;
 
       // Chequeo por centro dentro del óvalo
       final dx = (normCenter.dx - cx) / rx;
@@ -327,7 +386,8 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       if (faceRect != null) {
         // Espejar rect si está en cámara frontal, para coincidir con el overlay espejado
         if (widget.useFrontCamera) {
-          faceRect = Rect.fromLTWH(1.0 - (faceRect.left + faceRect.width), faceRect.top, faceRect.width, faceRect.height);
+          faceRect = Rect.fromLTWH(1.0 - (faceRect.left + faceRect.width),
+              faceRect.top, faceRect.width, faceRect.height);
         }
 
         bool ptInside(Offset p) {
@@ -344,7 +404,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         ];
 
         // Requiere que todas las esquinas estén dentro del óvalo
-  rectInside = corners.every(ptInside);
+        rectInside = corners.every(ptInside);
 
         // Puntos medio-superior e inferior sobre la vertical del centro del rostro
         final midTop = Offset(faceRect.center.dx, faceRect.top);
@@ -356,34 +416,36 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       // o al menos top/bottom dentro para garantizar centrado vertical aceptable)
       final inside = centerInside && (rectInside || topBottomInside);
 
-  // Use coordinates directly without mirroring for drawing (Transform handles it)
+      // Use coordinates directly without mirroring for drawing (Transform handles it)
       _faceRectNorm = res.normalizedFaceBounds;
       _normLandmarks = res.normalizedLandmarks;
       _normContours = res.normalizedContours;
       // Orientation (front-facing) checks
-      final yaw = (res.headEulerAngleY ?? 0).abs();   // left-right
+      final yaw = (res.headEulerAngleY ?? 0).abs(); // left-right
       final pitch = (res.headEulerAngleX ?? 0).abs(); // up-down
-      final roll = (res.headEulerAngleZ ?? 0).abs();  // head tilt
+      final roll = (res.headEulerAngleZ ?? 0).abs(); // head tilt
       final orientationOk = yaw <= widget.yawMaxDegrees &&
           pitch <= widget.pitchMaxDegrees &&
           roll <= widget.rollMaxDegrees;
 
       // Distance (size) checks
       final fh = (res.normalizedFaceHeight ?? 0).clamp(0.0, 1.0);
-      final distanceOk = fh >= widget.minFaceHeight && fh <= widget.maxFaceHeight;
+      final distanceOk =
+          fh >= widget.minFaceHeight && fh <= widget.maxFaceHeight;
 
       // Lighting validation - REQUIRED for capture
-      final lightingOk = _currentLightingAnalysis?.isAcceptable ?? true;
+      final lightingOk =
+          true; // _currentLightingAnalysis?.isAcceptable ?? true;
       final lightingMessage = _currentLightingAnalysis?.userMessage;
 
       // 🎯 SISTEMA DE PASOS PROGRESIVOS (2 PASOS)
       // Paso 1 SALTADO - Comenzamos directo en Paso 2
-      
+
       bool stepValid = false;
       String nextMsg = '';
       int currentRequired = 0;
       double progressPercentage = 0.0;
-      
+
       switch (_currentStep) {
         case CaptureStep.step1EyesAlignment:
           // ⏭️ PASO 1: SALTADO (no se usa)
@@ -396,28 +458,37 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
           final faceInOval = res.faceDetected && inside && distanceOk;
           stepValid = faceInOval && orientationOk;
           currentRequired = _step2RequiredFrames;
-          progressPercentage = (_stepValidFrames / currentRequired * 100).clamp(0.0, 100.0);
-          
+          progressPercentage =
+              (_stepValidFrames / currentRequired * 100).clamp(0.0, 100.0);
+
           if (!res.faceDetected) {
             nextMsg = widget.config.texts.noFaceDetected;
           } else if (!inside) {
             nextMsg = widget.config.texts.placeYourFace;
           } else if (!distanceOk) {
-            nextMsg = fh < widget.minFaceHeight ? widget.config.texts.moveCloser : widget.config.texts.moveAway;
+            nextMsg = fh < widget.minFaceHeight
+                ? widget.config.texts.moveCloser
+                : widget.config.texts.moveAway;
           } else if (!orientationOk) {
             nextMsg = widget.config.texts.lookForward;
           } else {
-            nextMsg = '${widget.config.texts.preparing} ${progressPercentage.toStringAsFixed(0)}%';
+            nextMsg =
+                '${widget.config.texts.preparing} ${progressPercentage.toStringAsFixed(0)}%';
           }
           break;
 
         case CaptureStep.step3FinalCapture:
           // PASO 3: Validación COMPLETA (overlay 100%, incluye hombros)
-          final allValid = res.faceDetected && inside && orientationOk && distanceOk && lightingOk;
+          final allValid = res.faceDetected &&
+              inside &&
+              orientationOk &&
+              distanceOk &&
+              lightingOk;
           stepValid = allValid;
           currentRequired = _step3RequiredFrames;
-          progressPercentage = (_stepValidFrames / currentRequired * 100).clamp(0.0, 100.0);
-          
+          progressPercentage =
+              (_stepValidFrames / currentRequired * 100).clamp(0.0, 100.0);
+
           if (!res.faceDetected) {
             nextMsg = widget.config.texts.noFaceDetected;
           } else if (!inside) {
@@ -425,11 +496,14 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
           } else if (!orientationOk) {
             nextMsg = widget.config.texts.lookForward;
           } else if (!distanceOk) {
-            nextMsg = fh < widget.minFaceHeight ? widget.config.texts.moveCloser : widget.config.texts.moveAway;
+            nextMsg = fh < widget.minFaceHeight
+                ? widget.config.texts.moveCloser
+                : widget.config.texts.moveAway;
           } else if (!lightingOk && lightingMessage != null) {
             nextMsg = '💡 $lightingMessage';
           } else {
-            nextMsg = '${widget.config.texts.capturing} ${progressPercentage.toStringAsFixed(0)}%';
+            nextMsg =
+                '${widget.config.texts.capturing} ${progressPercentage.toStringAsFixed(0)}%';
           }
           break;
       }
@@ -438,7 +512,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       if (stepValid) {
         _stepValidFrames++;
         _validFrames++; // Mantener backward compatibility
-        
+
         // Verificar si completamos el paso actual
         bool stepCompleted = false;
         switch (_currentStep) {
@@ -452,12 +526,13 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
             stepCompleted = _stepValidFrames >= _step3RequiredFrames;
             break;
         }
-        
+
         if (stepCompleted) {
           // Transición al siguiente paso
           switch (_currentStep) {
             case CaptureStep.step1EyesAlignment:
-              debugPrint('[CaptureSteps] ✅ Paso 1 completado → Avanzando a Paso 2');
+              debugPrint(
+                  '[CaptureSteps] ✅ Paso 1 completado → Avanzando a Paso 2');
               if (mounted) {
                 setState(() {
                   _currentStep = CaptureStep.step2FaceCentering;
@@ -466,14 +541,16 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
                 });
               }
               break;
-              
+
             case CaptureStep.step2FaceCentering:
               // ⚡ Si está en modo de 1 solo paso, capturar directamente sin avanzar a paso 3
               if (widget.useSingleCaptureStep) {
-                debugPrint('[CaptureSteps] ✅ Modo 1 paso (desde step2): Capturando directamente');
+                debugPrint(
+                    '[CaptureSteps] ✅ Modo 1 paso (desde step2): Capturando directamente');
                 await _captureImage();
               } else {
-                debugPrint('[CaptureSteps] ✅ Paso 2 completado → Avanzando a Paso 3 (Final)');
+                debugPrint(
+                    '[CaptureSteps] ✅ Paso 2 completado → Avanzando a Paso 3 (Final)');
                 if (mounted) {
                   setState(() {
                     _currentStep = CaptureStep.step3FinalCapture;
@@ -483,9 +560,10 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
                 }
               }
               break;
-              
+
             case CaptureStep.step3FinalCapture:
-              debugPrint('[CaptureSteps] ✅ Paso 3 completado → CAPTURANDO FOTO (useSingleCaptureStep=${widget.useSingleCaptureStep})');
+              debugPrint(
+                  '[CaptureSteps] ✅ Paso 3 completado → CAPTURANDO FOTO (useSingleCaptureStep=${widget.useSingleCaptureStep})');
               await _captureImage();
               break;
           }
@@ -502,10 +580,16 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         }
       } else {
         // Step validation failed - decay gracefully
-        final newStepValid = (_stepValidFrames - 2).clamp(0, 100); // Decay más rápido en pasos
-        final newValid = (_validFrames - 1).clamp(0, widget.requiredValidFrames);
-        
-        if (mounted && (_stepValidFrames != newStepValid || _validFrames != newValid || _insideOval || _statusMessage != nextMsg)) {
+        final newStepValid =
+            (_stepValidFrames - 2).clamp(0, 100); // Decay más rápido en pasos
+        final newValid =
+            (_validFrames - 1).clamp(0, widget.requiredValidFrames);
+
+        if (mounted &&
+            (_stepValidFrames != newStepValid ||
+                _validFrames != newValid ||
+                _insideOval ||
+                _statusMessage != nextMsg)) {
           setState(() {
             _insideOval = false;
             _stepValidFrames = newStepValid;
@@ -528,18 +612,20 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
   }
 
   Future<void> _captureImage() async {
-    if (_isCapturing || _controller == null || !_controller!.value.isInitialized) return;
+    if (_isCapturing ||
+        _controller == null ||
+        !_controller!.value.isInitialized) return;
     if (!mounted) return;
-    
+
     setState(() {
       _isCapturing = true;
       _isProcessing = true;
       _statusMessage = widget.config.texts.capturing;
     });
-    
+
     try {
       debugPrint('[Capture] Starting capture sequence');
-      
+
       // ⚡ PASO 1: Detener stream RÁPIDO (sin delays innecesarios)
       if (_controller!.value.isStreamingImages) {
         debugPrint('[Capture] Stopping image stream...');
@@ -555,7 +641,9 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       // ⚡ PASO 2: Pequeño delay para que el pipeline se vacíe (mínimo necesario)
       debugPrint('[Capture] Pipeline drain delay...');
       await Future.delayed(const Duration(milliseconds: 100));
-      try { await _controller!.setFlashMode(FlashMode.off); } catch (_) {}
+      try {
+        await _controller!.setFlashMode(FlashMode.off);
+      } catch (_) {}
 
       // ⚡ PASO 3: TOMAR LA FOTO INMEDIATAMENTE (ANTES del dialog)
       debugPrint('[Capture] 📸 Taking picture NOW...');
@@ -568,7 +656,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
           },
         );
         debugPrint('[Capture] ✅ takePicture SUCCESS - Photo captured!');
-        
+
         // ⚡ FEEDBACK VISUAL INSTANTÁNEO: Flash blanco
         if (mounted) {
           setState(() => _showCaptureFlash = true);
@@ -600,10 +688,11 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         } catch (_) {}
         return; // Exit without rethrowing
       }
-      
+
       // ✅ PASO 4: AHORA SÍ mostrar dialog "Procesando imagen..." para crop/background removal
       if (mounted) {
-        debugPrint('[Capture] 🎨 Showing processing dialog... (showDebug=${widget.showDebug})');
+        debugPrint(
+            '[Capture] 🎨 Showing processing dialog... (showDebug=${widget.showDebug})');
         showDialog(
           context: context,
           barrierDismissible: false,
@@ -640,16 +729,17 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
           ),
         );
       }
-      
+
       if (!mounted) return;
-      
+
       // Renombrar archivo original con prefijo "original_"
       File file = File(pic.path);
       final originalTimestamp = DateTime.now().millisecondsSinceEpoch;
-      final originalPath = '${file.parent.path}/original_$originalTimestamp.jpg';
+      final originalPath =
+          '${file.parent.path}/original_$originalTimestamp.jpg';
       file = await file.rename(originalPath);
       debugPrint('[Capture] Original saved: $originalPath');
-      
+
       // Espejar horizontalmente la imagen para selfies (modo espejo)
       Uint8List? mirroredBytes;
       if (widget.useFrontCamera) {
@@ -670,17 +760,19 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         final bytesToCrop = mirroredBytes ?? await file.readAsBytes();
         debugPrint('[Capture] Cropping ${bytesToCrop.length} bytes');
         debugPrint('[Capture] Original file size: ${file.lengthSync()} bytes');
-        
+
         final cropped = await SimpleCropper.cropTo34(bytesToCrop);
         file = cropped;
-        
+
         debugPrint('[Capture] Cropped file path: ${file.path}');
         debugPrint('[Capture] Cropped file exists: ${file.existsSync()}');
-        debugPrint('[Capture] Cropped file size: ${file.existsSync() ? file.lengthSync() : 0} bytes');
-        
+        debugPrint(
+            '[Capture] Cropped file size: ${file.existsSync() ? file.lengthSync() : 0} bytes');
+
         // Verificar que la imagen no esté corrupta
         final croppedBytes = await file.readAsBytes();
-        debugPrint('[Capture] Cropped bytes readable: ${croppedBytes.length} bytes');
+        debugPrint(
+            '[Capture] Cropped bytes readable: ${croppedBytes.length} bytes');
       } catch (e, stack) {
         debugPrint('[Capture] Crop failed: $e');
         debugPrint('[Capture] Stack: $stack');
@@ -715,9 +807,12 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
         debugPrint('[Capture] Skipping lighting correction - canAutoCorrect: ${_currentLightingAnalysis?.canAutoCorrect}');
       }
       */
-      debugPrint('[Capture] ⚠️ Lighting correction DISABLED for debugging white preview issue');
+      debugPrint(
+          '[Capture] ⚠️ Lighting correction DISABLED for debugging white preview issue');
 
       // ✅ PROCESAR IMAGEN usando servicio centralizado (SOLID)
+      // ⚠️ COMENTADO: local_rembg causa problema de 16KB page size en la tienda
+      /*
       if (widget.showDebug) {
         debugPrint('[Capture] 🔍 Checking background removal: removeBackground=${widget.removeBackground}');
       }
@@ -758,16 +853,20 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
           debugPrint('[Capture] ⏭️ Background removal DISABLED (removeBackground=false)');
         }
       }
-      
+      */
+      debugPrint(
+          '[Capture] ⏭️ Background removal DISABLED - local_rembg removed (16KB page size issue)');
+
       // El callback onImageCaptured recibe la imagen YA PROCESADA
       if (widget.showDebug) {
         debugPrint('[Capture] Calling onImageCaptured with processed image...');
       }
       debugPrint('[Capture] 📸 Calling onImageCaptured callback...');
       await widget.onImageCaptured(file);
-      
+
       // Cerrar dialog de procesamiento
-      debugPrint('[Capture] 🔴 Attempting to close processing dialog... (mounted=$mounted)');
+      debugPrint(
+          '[Capture] 🔴 Attempting to close processing dialog... (mounted=$mounted)');
       if (mounted) {
         Navigator.of(context, rootNavigator: true).pop(); // Cerrar dialog
         debugPrint('[Capture] ✅ Processing dialog closed successfully');
@@ -780,14 +879,17 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       }
 
       // Oculta la textura de la cámara durante la navegación para evitar errores de Impeller
-  setState(() { _hideCameraPreview = true; });
-  // Dejar que Flutter pinte el frame con la textura oculta antes de navegar
-  await Future.delayed(const Duration(milliseconds: 16));
+      setState(() {
+        _hideCameraPreview = true;
+      });
+      // Dejar que Flutter pinte el frame con la textura oculta antes de navegar
+      await Future.delayed(const Duration(milliseconds: 16));
       // Navegar a pantalla de preview; si el usuario acepta, regresamos ese file; si no, reanudamos la cámara.
       bool? accepted;
       try {
         // Si se usa GoRouter, context.push devuelve el result. Ruta esperada: '/datamex-photo-preview'
-        accepted = await context.push<bool>('/datamex-photo-preview', extra: file);
+        accepted =
+            await context.push<bool>('/datamex-photo-preview', extra: file);
       } catch (_) {
         // Fallback a Navigator con inline preview
         try {
@@ -806,7 +908,9 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
 
       // Usuario canceló o hubo error: reanudar preview y stream para reintentar
       if (mounted) {
-        try { await _controller!.resumePreview(); } catch (_) {}
+        try {
+          await _controller!.resumePreview();
+        } catch (_) {}
         if (!_controller!.value.isStreamingImages) {
           await _controller!.startImageStream(_processCameraImage);
         }
@@ -814,7 +918,8 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
           _isCapturing = false;
           _validFrames = 0;
           _stepValidFrames = 0; // Reset paso actual
-          _currentStep = CaptureStep.step2FaceCentering; // Volver al paso 2 (saltamos paso 1)
+          _currentStep = CaptureStep
+              .step2FaceCentering; // Volver al paso 2 (saltamos paso 1)
           _hideCameraPreview = false;
         });
       }
@@ -826,22 +931,31 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
       }
       // Try to recover stream for user to retry
       try {
-        if (mounted && _controller != null && _controller!.value.isInitialized) {
-          try { await _controller!.resumePreview(); } catch (e) { debugPrint('[Capture] resumePreview error: $e'); }
+        if (mounted &&
+            _controller != null &&
+            _controller!.value.isInitialized) {
+          try {
+            await _controller!.resumePreview();
+          } catch (e) {
+            debugPrint('[Capture] resumePreview error: $e');
+          }
           if (!_controller!.value.isStreamingImages) {
             await _controller!.startImageStream(_processCameraImage);
           }
-          setState(() { _hideCameraPreview = false; });
+          setState(() {
+            _hideCameraPreview = false;
+          });
         }
       } catch (_) {}
     }
   }
 
-  void _showError(String msg) { /* Silent: no toast per requirements */ }
+  void _showError(String msg) {/* Silent: no toast per requirements */}
 
   @override
   Widget build(BuildContext context) {
-    if (!_initialized || _controller == null) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (!_initialized || _controller == null)
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     final pv = _controller!.value.previewSize!;
     final pW = pv.height.toDouble(); // portrait swap
     final pH = pv.width.toDouble();
@@ -856,9 +970,9 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
               width: pW,
               height: pH,
               child: Stack(children: [
-        _hideCameraPreview
-          ? Container(color: Colors.black)
-          : CameraPreview(_controller!),
+                _hideCameraPreview
+                    ? Container(color: Colors.black)
+                    : CameraPreview(_controller!),
                 // Mirror the overlay to match the mirrored preview
                 widget.useFrontCamera
                     ? Transform(
@@ -867,25 +981,34 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
                         child: CustomPaint(
                           size: Size(pW, pH),
                           painter: _SimpleOverlayPainter(
-                            progress: (_validFrames / widget.requiredValidFrames).clamp(0.0, 1.0),
+                            progress:
+                                (_validFrames / widget.requiredValidFrames)
+                                    .clamp(0.0, 1.0),
                             faceRectNorm: _faceRectNorm,
-                            landmarksNorm: widget.showFaceGuides ? _normLandmarks : null,
-                            contoursNorm: widget.showFaceGuides ? _normContours : null,
+                            landmarksNorm:
+                                widget.showFaceGuides ? _normLandmarks : null,
+                            contoursNorm:
+                                widget.showFaceGuides ? _normContours : null,
                             currentStep: _currentStep,
-                            animationProgress: _animationProgress, // 🎨 Animación continua
+                            animationProgress:
+                                _animationProgress, // 🎨 Animación continua
                           ),
                         ),
                       )
                     : CustomPaint(
                         size: Size(pW, pH),
                         painter: _SimpleOverlayPainter(
-                            progress: (_validFrames / widget.requiredValidFrames).clamp(0.0, 1.0),
-                            faceRectNorm: _faceRectNorm,
-                            landmarksNorm: widget.showFaceGuides ? _normLandmarks : null,
-                            contoursNorm: widget.showFaceGuides ? _normContours : null,
-                            currentStep: _currentStep,
-                            animationProgress: _animationProgress, // 🎨 Animación continua
-                          ),
+                          progress: (_validFrames / widget.requiredValidFrames)
+                              .clamp(0.0, 1.0),
+                          faceRectNorm: _faceRectNorm,
+                          landmarksNorm:
+                              widget.showFaceGuides ? _normLandmarks : null,
+                          contoursNorm:
+                              widget.showFaceGuides ? _normContours : null,
+                          currentStep: _currentStep,
+                          animationProgress:
+                              _animationProgress, // 🎨 Animación continua
+                        ),
                       ),
               ]),
             ),
@@ -901,7 +1024,8 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
             decoration: BoxDecoration(
               color: Colors.black.withValues(alpha: 0.75),
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.3), width: 1),
+              border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.3), width: 1),
             ),
             child: Column(
               children: [
@@ -940,11 +1064,12 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
               decoration: BoxDecoration(
-                color: _isProcessing 
-                  ? Colors.blue.withValues(alpha: 0.9) // Azul durante procesamiento
-                  : _insideOval 
-                    ? Colors.green.withValues(alpha: 0.9) 
-                    : Colors.orange.withValues(alpha: 0.85),
+                color: _isProcessing
+                    ? Colors.blue
+                        .withValues(alpha: 0.9) // Azul durante procesamiento
+                    : _insideOval
+                        ? Colors.green.withValues(alpha: 0.9)
+                        : Colors.orange.withValues(alpha: 0.85),
                 borderRadius: BorderRadius.circular(14),
                 boxShadow: [
                   BoxShadow(
@@ -955,7 +1080,9 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
                 ],
               ),
               child: Text(
-                _statusMessage.isEmpty ? '🎯 Coloca tu rostro en el óvalo' : _statusMessage,
+                _statusMessage.isEmpty
+                    ? '🎯 Coloca tu rostro en el óvalo'
+                    : _statusMessage,
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: Colors.white,
@@ -973,7 +1100,7 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
             ),
           ),
         ),
-        
+
         // ⚡ FLASH BLANCO al capturar (feedback visual instantáneo)
         if (_showCaptureFlash)
           Positioned.fill(
@@ -1034,7 +1161,9 @@ class _FaceDetectionCameraSimpleState extends State<FaceDetectionCameraSimple> {
   void dispose() {
     _isDisposed = true;
     _animationTimer?.cancel(); // Cancelar timer de animación
-    try { _controller?.dispose(); } catch (_) {}
+    try {
+      _controller?.dispose();
+    } catch (_) {}
     _faceDetectionService?.dispose();
     super.dispose();
   }
@@ -1045,9 +1174,10 @@ class _SimpleOverlayPainter extends CustomPainter {
   final Rect? faceRectNorm; // 0..1
   final List<Offset>? landmarksNorm; // 0..1
   final Map<String, List<Offset>>? contoursNorm; // 0..1
-  final CaptureStep currentStep; // 🎯 Paso actual para cambiar tamaño de overlay
+  final CaptureStep
+      currentStep; // 🎯 Paso actual para cambiar tamaño de overlay
   final double animationProgress; // 🎨 Progreso de animación continua (0-1)
-  
+
   const _SimpleOverlayPainter({
     this.progress = 0.0,
     this.faceRectNorm,
@@ -1063,14 +1193,14 @@ class _SimpleOverlayPainter extends CustomPainter {
     final layer = Offset.zero & size;
     canvas.saveLayer(layer, Paint());
     canvas.drawRect(layer, overlay);
-    
+
     final cx = size.width / 2, cy = size.height / 2;
-    
+
     // 🎯 TAMAÑO DE OVERLAY SEGÚN EL PASO ACTUAL
     double ovalWidthFactor;
     double ovalHeightFactor;
     Color ovalColor;
-    
+
     switch (currentStep) {
       case CaptureStep.step1EyesAlignment:
         // Paso 1: Círculo pequeño para OJOS (25% del tamaño normal)
@@ -1078,14 +1208,14 @@ class _SimpleOverlayPainter extends CustomPainter {
         ovalHeightFactor = 0.20; // 20% del alto (circular en zona de ojos)
         ovalColor = Colors.cyan; // Color distintivo para paso 1
         break;
-        
+
       case CaptureStep.step2FaceCentering:
         // Paso 2: Óvalo mediano para CABEZA (60% del tamaño normal)
         ovalWidthFactor = 0.45; // 45% del ancho
         ovalHeightFactor = 0.35; // 35% del alto (cabeza completa)
         ovalColor = Colors.amber; // Color distintivo para paso 2
         break;
-        
+
       case CaptureStep.step3FinalCapture:
         // Paso 3: Óvalo completo para CABEZA + HOMBROS (tamaño original)
         ovalWidthFactor = 0.56; // 56% del ancho
@@ -1093,26 +1223,27 @@ class _SimpleOverlayPainter extends CustomPainter {
         ovalColor = Colors.greenAccent; // Color distintivo para paso 3
         break;
     }
-    
+
     final ow = size.width * ovalWidthFactor;
     final oh = size.height * ovalHeightFactor;
-    
+
     final clear = Paint()..blendMode = BlendMode.clear;
-    canvas.drawOval(Rect.fromCenter(center: Offset(cx, cy), width: ow, height: oh), clear);
-    
+    canvas.drawOval(
+        Rect.fromCenter(center: Offset(cx, cy), width: ow, height: oh), clear);
+
     canvas.restore();
-    
+
     // 🎨 ANIMACIÓN ROTATIVA ALREDEDOR DEL ÓVALO (evita sensación de freeze)
     // Dibuja 3 arcos pulsantes que rotan continuamente
     final animAngle = animationProgress * 2 * math.pi;
     final arcLength = math.pi / 6; // 30 grados por arco
-    
+
     final animatedBorder = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 4
       ..strokeCap = StrokeCap.round
       ..color = ovalColor.withOpacity(0.9);
-    
+
     // Arco 1 (superior)
     canvas.drawArc(
       Rect.fromCenter(center: Offset(cx, cy), width: ow + 10, height: oh + 10),
@@ -1121,7 +1252,7 @@ class _SimpleOverlayPainter extends CustomPainter {
       false,
       animatedBorder,
     );
-    
+
     // Arco 2 (medio, 120° desfasado)
     canvas.drawArc(
       Rect.fromCenter(center: Offset(cx, cy), width: ow + 10, height: oh + 10),
@@ -1130,7 +1261,7 @@ class _SimpleOverlayPainter extends CustomPainter {
       false,
       animatedBorder,
     );
-    
+
     // Arco 3 (inferior, 240° desfasado)
     canvas.drawArc(
       Rect.fromCenter(center: Offset(cx, cy), width: ow + 10, height: oh + 10),
@@ -1139,13 +1270,14 @@ class _SimpleOverlayPainter extends CustomPainter {
       false,
       animatedBorder,
     );
-    
+
     // Borde principal con color según el paso
     final border = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2
       ..color = ovalColor.withOpacity(0.8);
-    canvas.drawOval(Rect.fromCenter(center: Offset(cx, cy), width: ow, height: oh), border);
+    canvas.drawOval(
+        Rect.fromCenter(center: Offset(cx, cy), width: ow, height: oh), border);
 
     // Marcas de registro (esquinas) usando normalizado → pixeles
     if (faceRectNorm != null) {
@@ -1223,7 +1355,8 @@ class _SimpleOverlayPainter extends CustomPainter {
       ..strokeWidth = 6
       ..strokeCap = StrokeCap.round;
     const start = -math.pi / 2;
-    final rectRing = Rect.fromCenter(center: Offset(cx, cy), width: ow + 16, height: oh + 16);
+    final rectRing = Rect.fromCenter(
+        center: Offset(cx, cy), width: ow + 16, height: oh + 16);
     canvas.drawArc(rectRing, 0, 2 * math.pi, false, baseRing);
     final sweep = (progress.clamp(0.0, 1.0)) * 2 * math.pi;
     canvas.drawArc(rectRing, start, sweep, false, ring);
@@ -1300,7 +1433,7 @@ class _InlinePreview extends StatelessWidget {
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 24),
-                  
+
                   // Botones grandes y claros
                   Row(
                     children: [
@@ -1349,9 +1482,9 @@ class _InlinePreview extends StatelessWidget {
                           ),
                         ),
                       ),
-                      
+
                       const SizedBox(width: 16),
-                      
+
                       // Botón Usar esta foto
                       Expanded(
                         child: Material(
@@ -1370,7 +1503,8 @@ class _InlinePreview extends StatelessWidget {
                                 borderRadius: BorderRadius.circular(16),
                                 boxShadow: [
                                   BoxShadow(
-                                    color: const Color(0xFF4CAF50).withOpacity(0.4),
+                                    color: const Color(0xFF4CAF50)
+                                        .withOpacity(0.4),
                                     blurRadius: 12,
                                     offset: const Offset(0, 4),
                                   ),

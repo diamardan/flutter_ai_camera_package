@@ -2,7 +2,7 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
-import 'package:local_rembg/local_rembg.dart';
+/* import 'package:local_rembg/local_rembg.dart';*/
 import 'package:image/image.dart' as img;
 import 'edge_refinement_service.dart';
 import 'matte_utils.dart';
@@ -20,7 +20,7 @@ class ImageProcessingService {
   /// Retorna:
   /// - Un objeto [ProcessedImageResult] con los archivos PNG (transparencia) y JPG (fondo blanco)
   /// - null si el procesamiento falla
-  static Future<ProcessedImageResult?> processImageWithBackgroundRemoval({
+  /* static Future<ProcessedImageResult?> processImageWithBackgroundRemoval({
     required File inputFile,
     bool applyEdgeRefinement = true,
     double edgeBlurIntensity = 5.0,
@@ -146,7 +146,7 @@ class ImageProcessingService {
       debugPrint('[ImageProcessing] Stack: $stack');
       return null;
     }
-  }
+  } */
 }
 
 /// Resultado del procesamiento de imagen

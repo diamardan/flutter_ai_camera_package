@@ -17,8 +17,9 @@ final datamexFaceDetectionEnabledProvider = StateProvider<bool>((ref) => false);
 
 /// Remove background enabled provider
 /// Control centralizado para activar/desactivar la remoción de fondo
-/// Usa Local Rembg (preciso, 5-7 segundos)
-final datamexRemoveBackgroundProvider = StateProvider<bool>((ref) => true);
+/// ⚠️ DESHABILITADO: local_rembg causa problema de 16KB page size en la tienda
+/// Default: false (sin remoción de fondo)
+final datamexRemoveBackgroundProvider = StateProvider<bool>((ref) => false);
 
 /// Processing state provider (para el preview)
 /// Indica si la imagen está siendo procesada (removiendo fondo)

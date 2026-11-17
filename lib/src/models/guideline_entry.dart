@@ -25,6 +25,10 @@ class GuidelinesConfig {
   final double edgeBlurIntensity;
   /// Use single capture step (fast mode) or multiple steps (2 ovals)
   final bool useSingleCaptureStep;
+  /// Mostrar diálogo rápido previo a la detección facial.
+  final bool showGuidelinesDialog;
+  /// Ítems que se muestran dentro del diálogo de lineamientos rápidos.
+  final List<String> guidelinesDialogItems;
   
   const GuidelinesConfig({
     required this.guidelines,
@@ -37,5 +41,7 @@ class GuidelinesConfig {
     this.showDebug = false,
     this.edgeBlurIntensity = 5.0,
     this.useSingleCaptureStep = false,
+    this.showGuidelinesDialog = false,
+    this.guidelinesDialogItems = const [],
   });
 }

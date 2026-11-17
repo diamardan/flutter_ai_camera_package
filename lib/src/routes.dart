@@ -24,6 +24,8 @@ GoRoute datamexOverlayRoute({
       bool startsSelfie = false;
       bool showFaceGuides = true;
       bool showDebug = false;
+      bool showGuidelinesDialog = false;
+      List<String> guidelinesDialogItems = const [];
       double edgeBlurIntensity = 5.0;
       bool useSingleCaptureStep = false;
       CameraConfig config = const CameraConfig();
@@ -35,6 +37,14 @@ GoRoute datamexOverlayRoute({
         if (extra['showFaceGuides'] is bool) showFaceGuides = extra['showFaceGuides'] as bool;
         if (extra['config'] is CameraConfig) config = extra['config'] as CameraConfig;
         if (extra['showDebug'] is bool) showDebug = extra['showDebug'] as bool;
+        if (extra['showGuidelinesDialog'] is bool) showGuidelinesDialog = extra['showGuidelinesDialog'] as bool;
+        if (extra['guidelinesDialogItems'] is List) {
+          try {
+            guidelinesDialogItems = List<String>.from(extra['guidelinesDialogItems'] as List);
+          } catch (_) {
+            guidelinesDialogItems = const [];
+          }
+        }
         if (extra['edgeBlurIntensity'] is double) edgeBlurIntensity = extra['edgeBlurIntensity'] as double;
         if (extra['useSingleCaptureStep'] is bool) useSingleCaptureStep = extra['useSingleCaptureStep'] as bool;
       }
@@ -47,6 +57,8 @@ GoRoute datamexOverlayRoute({
           showFaceGuides: showFaceGuides,
           config: config,
           showDebug: showDebug,
+          showGuidelinesDialog: showGuidelinesDialog,
+          guidelinesDialogItems: guidelinesDialogItems,
           edgeBlurIntensity: edgeBlurIntensity,
           useSingleCaptureStep: useSingleCaptureStep,
           // removeBackground se lee internamente del provider
@@ -77,6 +89,8 @@ GoRoute datamexGuidelinesRoute({
           startsWithSelfie: true,
           showOverlay: true,
           showFaceGuides: true,
+          showGuidelinesDialog: false,
+          guidelinesDialogItems: const [],
         );
       }
       return MaterialPage<void>(
